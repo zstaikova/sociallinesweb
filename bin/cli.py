@@ -113,6 +113,22 @@ def cmd_auth(args):
         from pipeline.platforms.tiktok.publisher import TikTokPublisher
         sys.exit(0 if TikTokPublisher().verify_auth() else 1)
 
+    elif args.platform == "threads":
+        from pipeline.platforms.threads.publisher import ThreadsPublisher
+        sys.exit(0 if ThreadsPublisher().verify_auth() else 1)
+
+    elif args.platform == "bluesky":
+        from pipeline.platforms.bluesky.publisher import BlueskyPublisher
+        sys.exit(0 if BlueskyPublisher().verify_auth() else 1)
+
+    elif args.platform == "linkedin":
+        from pipeline.platforms.linkedin.publisher import LinkedInPublisher
+        sys.exit(0 if LinkedInPublisher().verify_auth() else 1)
+
+    elif args.platform == "pinterest":
+        from pipeline.platforms.pinterest.publisher import PinterestPublisher
+        sys.exit(0 if PinterestPublisher().verify_auth() else 1)
+
     elif args.platform == "reddit":
         import praw, os
         reddit = praw.Reddit(
@@ -198,7 +214,10 @@ def main():
 
     # --- auth ---
     auth = sub.add_parser("auth", help="Verify credentials for a platform")
-    auth.add_argument("platform", choices=["facebook", "instagram", "x", "tiktok", "reddit"])
+    auth.add_argument("platform", choices=[
+        "facebook", "instagram", "x", "tiktok", "reddit",
+        "threads", "bluesky", "linkedin", "pinterest",
+    ])
     auth.set_defaults(func=cmd_auth)
 
     # --- stats ---
