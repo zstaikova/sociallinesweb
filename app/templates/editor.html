@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}Edit Post — FamJam{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="/" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Back to queue
+  </a>
+</div>
+
+<div class="row g-4">
+
+  <!-- Left: image + core caption -->
+  <div class="col-md-4">
+    <div class="card shadow-sm">
+      <img src="{{ url_for('serve_queue_image', filename=filename) }}"
+           class="card-img-top post-preview-img" alt="preview">
+      <div class="card-body">
+        <label class="form-label fw-semibold">Core caption</label>
+        <textarea id="core-caption" class="form-control" rows="3"
+                  placeholder="Write a caption...">{{ caption }}</textarea>
+        <button id="btn-generate" class="btn btn-primary w-100 mt-2">
+          <i class="bi bi-stars me-1"></i>Generate AI captions
+        </button>
+        <div id="gen-spinner" class="text-center mt-2 d-none">
+          <div class="spinner-border spinner-border-sm text-primary"></div>
+          <span class="ms-2 small text-muted">Generating...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: platform selector + captions -->
+  <div class="col-md-8">
+
+    <!-- Platform selector bar -->
+    <div class="card shadow-sm mb-3">
+      <div class="card-body py-2 px-3">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <span class="text-muted small me-1">Post to:</span>
+          <button class="btn btn-platform active" id="sel-all" onclick="toggleAll()">
+            <i class="bi bi-broadcast me-1"></i>ALL
+          </button>
+          <button class="btn btn-platform active" id="sel-facebook" onclick="togglePlatform('facebook')">
+            <i class="bi bi-facebook me-1 text-primary"></i>Facebook
+          </button>
+          <button class="btn btn-platform active" id="sel-instagram" onclick="togglePlatform('instagram')">
+            <i class="bi bi-instagram me-1 text-danger"></i>Instagram
+          </button>
+          <button class="btn btn-platform active" id="sel-x" onclick="togglePlatform('x')">
+            <i class="bi bi-twitter-x me-1"></i>X
+          </button>
+          <button class="btn btn-platform active" id="sel-tiktok" onclick="togglePlatform('tiktok')">
+            <i class="bi bi-tiktok me-1"></i>TikTok
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Platform caption cards -->
+    <div class="row g-3" id="platform-cards">
+      {% set platforms = [
+        ("facebook",  "Facebook",  "bi-facebook",  "text-primary",  "#1877f2", 0),
+        ("instagram", "Instagram", "bi-instagram", "text-danger",   "#e1306c", 0),
+        ("x",         "X",         "bi-twitter-x", "text-dark",     "#000000", 280),
+        ("tiktok",    "TikTok",    "bi-tiktok",    "text-secondary","#010101", 150),
+      ] %}
+
+      {% for pid, pname, icon, color, accent, limit in platforms %}
+      <div class="col-12 col-lg-6">
+        <div class="card platform-card shadow-sm" id="card-{{ pid }}" data-platform="{{ pid }}">
+          <div class="card-header d-flex align-items-center justify-content-between py-2"
+               style="border-left: 3px solid {{ accent }};">
+            <div class="d-flex align-items-center gap-2">
+              <i class="bi {{ icon }} {{ color }} fs-5"></i>
+              <span class="fw-semibold">{{ pname }}</span>
+            </div>
+            <span class="platform-status badge bg-success" id="status-{{ pid }}">ON</span>
+          </div>
+          <div class="card-body pb-2">
+            <textarea class="form-control platform-caption" id="caption-{{ pid }}"
+                      data-platform="{{ pid }}" data-limit="{{ limit }}"
+                      rows="4" placeholder="Caption for {{ pname }}..."></textarea>
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              {% if limit > 0 %}
+              <small class="char-count text-muted" id="count-{{ pid }}">0 / {{ limit }}</small>
+              {% else %}
+              <span></span>
+              {% endif %}
+              <small class="post-result-badge d-none" id="result-{{ pid }}"></small>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Actions -->
+    <div class="d-flex gap-2 mt-4 align-items-center">
+      <button id="btn-post" class="btn btn-success px-4">
+        <i class="bi bi-send me-1"></i>Post now
+      </button>
+      <button class="btn btn-outline-secondary px-4" disabled title="Coming soon">
+        <i class="bi bi-clock me-1"></i>Schedule
+      </button>
+      <span id="post-summary" class="ms-2 small text-muted d-none"></span>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const FILENAME = {{ filename | tojson }};
+const PLATFORMS = ['facebook', 'instagram', 'x', 'tiktok'];
+const selected  = { facebook: true, instagram: true, x: false, tiktok: true };
+
+// ── Platform selector ──────────────────────────────────────────
+function updateAllButton() {
+  const allOn = PLATFORMS.every(p => selected[p]);
+  document.getElementById('sel-all').classList.toggle('active', allOn);
+}
+
+function setSelected(pid, on) {
+  selected[pid] = on;
+  const btn  = document.getElementById('sel-' + pid);
+  const card = document.getElementById('card-' + pid);
+  const stat = document.getElementById('status-' + pid);
+  btn.classList.toggle('active', on);
+  card.classList.toggle('disabled-card', !on);
+  stat.textContent = on ? 'ON' : 'OFF';
+  stat.className   = `platform-status badge ${on ? 'bg-success' : 'bg-secondary'}`;
+  updateAllButton();
+}
+
+function togglePlatform(pid) {
+  setSelected(pid, !selected[pid]);
+}
+
+function toggleAll() {
+  const allOn = PLATFORMS.every(p => selected[p]);
+  PLATFORMS.forEach(p => setSelected(p, !allOn));
+}
+
+// ── Character counters ──────────────────────────────────────────
+document.querySelectorAll('.platform-caption').forEach(ta => {
+  const limit = parseInt(ta.dataset.limit);
+  if (!limit) return;
+  const counter = document.getElementById('count-' + ta.dataset.platform);
+  ta.addEventListener('input', () => {
+    const len = ta.value.length;
+    counter.textContent = `${len} / ${limit}`;
+    counter.classList.toggle('text-danger', len > limit);
+    counter.classList.toggle('text-muted',  len <= limit);
+  });
+});
+
+// ── Generate captions ───────────────────────────────────────────
+document.getElementById('btn-generate').addEventListener('click', async () => {
+  const caption = document.getElementById('core-caption').value.trim();
+  if (!caption) { alert('Enter a core caption first.'); return; }
+
+  document.getElementById('btn-generate').disabled = true;
+  document.getElementById('gen-spinner').classList.remove('d-none');
+
+  try {
+    const res  = await fetch('/api/generate-captions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ caption }),
+    });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return; }
+
+    PLATFORMS.forEach(p => {
+      const ta = document.getElementById('caption-' + p);
+      if (data[p]) {
+        ta.value = data[p];
+        ta.dispatchEvent(new Event('input'));
+      }
+    });
+  } catch (e) {
+    alert('Request failed: ' + e);
+  } finally {
+    document.getElementById('btn-generate').disabled = false;
+    document.getElementById('gen-spinner').classList.add('d-none');
+  }
+});
+
+// ── Post now ────────────────────────────────────────────────────
+document.getElementById('btn-post').addEventListener('click', async () => {
+  const platforms = PLATFORMS.filter(p => selected[p]);
+  const captions  = {};
+  platforms.forEach(p => captions[p] = document.getElementById('caption-' + p).value.trim());
+
+  if (!platforms.length) { alert('Select at least one platform.'); return; }
+
+  const empty = platforms.filter(p => !captions[p]);
+  if (empty.length) {
+    alert(`Missing captions for: ${empty.join(', ')}\nGenerate or write them first.`);
+    return;
+  }
+
+  const btn = document.getElementById('btn-post');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Posting...';
+
+  // Clear previous results
+  PLATFORMS.forEach(p => {
+    const r = document.getElementById('result-' + p);
+    r.classList.add('d-none');
+  });
+  document.getElementById('post-summary').classList.add('d-none');
+
+  try {
+    const res     = await fetch('/api/publish', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename: FILENAME, captions, platforms }),
+    });
+    const results = await res.json();
+
+    let posted = 0, failed = 0;
+    Object.entries(results).forEach(([p, status]) => {
+      const ok  = status === 'posted';
+      const el  = document.getElementById('result-' + p);
+      el.textContent  = ok ? '✓ Posted' : '✗ ' + status;
+      el.className    = `post-result-badge small fw-semibold ${ok ? 'text-success' : 'text-danger'}`;
+      el.classList.remove('d-none');
+      ok ? posted++ : failed++;
+    });
+
+    const summary = document.getElementById('post-summary');
+    summary.textContent = `${posted} posted${failed ? ', ' + failed + ' failed' : ''}`;
+    summary.className   = `ms-2 small fw-semibold ${failed ? 'text-danger' : 'text-success'}`;
+    summary.classList.remove('d-none');
+
+  } catch (e) {
+    alert('Post failed: ' + e);
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '<i class="bi bi-send me-1"></i>Post now';
+  }
+});
+</script>
+{% endblock %}

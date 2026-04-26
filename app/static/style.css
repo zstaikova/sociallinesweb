@@ -1,0 +1,98 @@
+body {
+  background: #f5f6fa;
+  font-size: 0.93rem;
+}
+
+.navbar-brand {
+  font-size: 1.1rem;
+  letter-spacing: 0.02em;
+}
+
+/* Queue grid */
+.image-card {
+  transition: transform 0.15s, box-shadow 0.15s;
+  border: 1px solid #e0e0e0;
+}
+.image-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+}
+.image-thumb-wrap {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: #eee;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.image-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Editor */
+.post-preview-img {
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  background: #111;
+  border-radius: 0.375rem 0.375rem 0 0;
+}
+
+.platform-card {
+  border: 1px solid #dee2e6;
+  transition: opacity 0.2s;
+}
+.platform-card .card-header {
+  background: #fafafa;
+}
+.platform-card textarea {
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.disabled-card {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.empty-state {
+  opacity: 0.6;
+}
+
+.char-count {
+  font-size: 0.78rem;
+}
+
+/* Platform selector buttons */
+.btn-platform {
+  font-size: 0.82rem;
+  padding: 0.25rem 0.75rem;
+  border: 2px solid #dee2e6;
+  border-radius: 20px;
+  background: #fff;
+  color: #6c757d;
+  transition: all 0.15s;
+}
+.btn-platform.active {
+  border-color: #0d6efd;
+  background: #e8f0fe;
+  color: #0d6efd;
+  font-weight: 600;
+}
+.btn-platform:hover {
+  border-color: #0d6efd;
+  color: #0d6efd;
+}
+#sel-all.active {
+  background: #0d6efd;
+  color: #fff;
+  border-color: #0d6efd;
+}
+
+/* Per-card result badge */
+.post-result-badge {
+  font-size: 0.78rem;
+}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Queue — FamJam{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h4 class="mb-0 me-3">Outgoing Queue</h4>
+  <span class="badge bg-secondary">{{ images|length }} image{{ 's' if images|length != 1 }}</span>
+</div>
+
+{% if images %}
+  <div class="row g-3">
+    {% for img in images %}
+    <div class="col-6 col-md-4 col-lg-3 col-xl-2">
+      <div class="card image-card h-100">
+        <div class="image-thumb-wrap">
+          <img src="{{ url_for('serve_queue_image', filename=img.filename) }}"
+               class="image-thumb" alt="{{ img.caption }}">
+        </div>
+        <div class="card-body p-2">
+          <p class="card-text small text-muted text-truncate mb-2" title="{{ img.caption }}">
+            {{ img.caption }}
+          </p>
+          <a href="{{ url_for('editor', filename=img.filename) }}"
+             class="btn btn-primary btn-sm w-100">
+            <i class="bi bi-pencil me-1"></i>Edit &amp; Post
+          </a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+{% else %}
+  <div class="empty-state text-center py-5">
+    <i class="bi bi-inbox display-3 text-muted"></i>
+    <p class="mt-3 text-muted">No images in queue.</p>
+    <p class="text-muted small">Drop images into <code>famjammemes/queue/</code> to get started.</p>
+  </div>
+{% endif %}
+{% endblock %}

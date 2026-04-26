@@ -1,0 +1,39 @@
+# Secrets
+.env
+
+# Runtime data
+socialline.db
+socialline.db-shm
+socialline.db-wal
+
+# Downloaded media
+downloads/
+
+# Outgoing memes queue
+famjammemes/
+
+# Remotion output
+D:/remotion/out/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temp / IDE
+temp_*.html
+.claude/
