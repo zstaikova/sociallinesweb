@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TikTok OAuth flow — opens browser, user pastes the redirect URL back into terminal.
+TikTok OAuth flow — opens browser, catches callback automatically.
 Run once: python bin/auth/tiktok.py
 """
 import sys
@@ -15,8 +15,9 @@ import hashlib
 import base64
 import webbrowser
 import requests
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlencode
 from dotenv import load_dotenv, set_key
+from bin.auth._callback_server import wait_for_callback
 
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
@@ -30,8 +31,8 @@ SCOPES    = "user.info.basic,video.publish,video.upload"
 CLIENT_KEY    = os.getenv("TIKTOK_CLIENT_KEY") or input("TikTok Client Key: ").strip()
 CLIENT_SECRET = os.getenv("TIKTOK_CLIENT_SECRET") or input("TikTok Client Secret: ").strip()
 
-csrf_state    = secrets.token_urlsafe(16)
-code_verifier = secrets.token_urlsafe(64)
+csrf_state     = secrets.token_urlsafe(16)
+code_verifier  = secrets.token_urlsafe(64)
 code_challenge = base64.urlsafe_b64encode(
     hashlib.sha256(code_verifier.encode()).digest()
 ).rstrip(b"=").decode()
@@ -62,25 +63,23 @@ def main():
     print("\nOpening browser for TikTok login...")
     print(f"\n  {auth_url}\n")
     webbrowser.open(auth_url)
+    print("Waiting for callback (the browser will redirect automatically)...")
 
-    print("After approving, TikTok will redirect you to your website.")
-    print("Copy the FULL URL from your browser address bar and paste it here.\n")
-    redirect_url = input("Paste redirect URL: ").strip()
+    result = wait_for_callback()
 
-    parsed = urlparse(redirect_url)
-    params_parsed = parse_qs(parsed.query)
-
-    if "code" not in params_parsed:
-        print("No code found in URL.")
+    if "error" in result:
+        print(f"Auth error: {result.get('error_description', result['error'])}")
+        sys.exit(1)
+    if "code" not in result:
+        print("No auth code received — timed out.")
         sys.exit(1)
 
-    code  = params_parsed["code"][0]
-    state = params_parsed.get("state", [""])[0]
+    state = result.get("state", "")
     if state != csrf_state:
         print("Warning: CSRF state mismatch — continuing anyway.")
 
     print("Exchanging code for tokens...")
-    access_token, open_id, refresh_token = exchange_code(code)
+    access_token, open_id, refresh_token = exchange_code(result["code"])
 
     resp = requests.get(f"{API_BASE}/user/info/",
         params={"fields": "display_name,avatar_url"},

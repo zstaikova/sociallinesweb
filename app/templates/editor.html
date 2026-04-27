@@ -47,11 +47,23 @@
           <button class="btn btn-platform active" id="sel-instagram" onclick="togglePlatform('instagram')">
             <i class="bi bi-instagram me-1 text-danger"></i>Instagram
           </button>
+          <button class="btn btn-platform active" id="sel-threads" onclick="togglePlatform('threads')">
+            <i class="bi bi-threads me-1"></i>Threads
+          </button>
           <button class="btn btn-platform active" id="sel-x" onclick="togglePlatform('x')">
             <i class="bi bi-twitter-x me-1"></i>X
           </button>
-          <button class="btn btn-platform active" id="sel-tiktok" onclick="togglePlatform('tiktok')">
+          <button class="btn btn-platform" id="sel-tiktok" onclick="togglePlatform('tiktok')">
             <i class="bi bi-tiktok me-1"></i>TikTok
+          </button>
+          <button class="btn btn-platform" id="sel-bluesky" onclick="togglePlatform('bluesky')">
+            <i class="bi bi-cloud me-1" style="color:#0085ff"></i>Bluesky
+          </button>
+          <button class="btn btn-platform" id="sel-linkedin" onclick="togglePlatform('linkedin')">
+            <i class="bi bi-linkedin me-1" style="color:#0a66c2"></i>LinkedIn
+          </button>
+          <button class="btn btn-platform" id="sel-pinterest" onclick="togglePlatform('pinterest')">
+            <i class="bi bi-pinterest me-1 text-danger"></i>Pinterest
           </button>
         </div>
       </div>
@@ -60,10 +72,14 @@
     <!-- Platform caption cards -->
     <div class="row g-3" id="platform-cards">
       {% set platforms = [
-        ("facebook",  "Facebook",  "bi-facebook",  "text-primary",  "#1877f2", 0),
-        ("instagram", "Instagram", "bi-instagram", "text-danger",   "#e1306c", 0),
-        ("x",         "X",         "bi-twitter-x", "text-dark",     "#000000", 280),
-        ("tiktok",    "TikTok",    "bi-tiktok",    "text-secondary","#010101", 150),
+        ("facebook",  "Facebook",  "bi-facebook",   "text-primary",  "#1877f2", 0),
+        ("instagram", "Instagram", "bi-instagram",  "text-danger",   "#e1306c", 0),
+        ("threads",   "Threads",   "bi-threads",    "text-dark",     "#000000", 500),
+        ("x",         "X",         "bi-twitter-x",  "text-dark",     "#000000", 280),
+        ("tiktok",    "TikTok",    "bi-tiktok",     "text-secondary","#010101", 150),
+        ("bluesky",   "Bluesky",   "bi-cloud",      "",              "#0085ff", 300),
+        ("linkedin",  "LinkedIn",  "bi-linkedin",   "",              "#0a66c2", 3000),
+        ("pinterest", "Pinterest", "bi-pinterest",  "text-danger",   "#e60023", 500),
       ] %}
 
       {% for pid, pname, icon, color, accent, limit in platforms %}
@@ -113,8 +129,8 @@
 {% block scripts %}
 <script>
 const FILENAME = {{ filename | tojson }};
-const PLATFORMS = ['facebook', 'instagram', 'x', 'tiktok'];
-const selected  = { facebook: true, instagram: true, x: false, tiktok: true };
+const PLATFORMS = ['facebook', 'instagram', 'threads', 'x', 'tiktok', 'bluesky', 'linkedin', 'pinterest'];
+const selected  = { facebook: true, instagram: true, threads: true, x: true, tiktok: false, bluesky: false, linkedin: false, pinterest: false };
 
 // ── Platform selector ──────────────────────────────────────────
 function updateAllButton() {
@@ -222,10 +238,11 @@ document.getElementById('btn-post').addEventListener('click', async () => {
     const results = await res.json();
 
     let posted = 0, failed = 0;
-    Object.entries(results).forEach(([p, status]) => {
-      const ok  = status === 'posted';
+    Object.entries(results).forEach(([p, res]) => {
+      const ok  = res.status === 'posted';
       const el  = document.getElementById('result-' + p);
-      el.textContent  = ok ? '✓ Posted' : '✗ ' + status;
+      el.textContent  = ok ? '✓ Posted' : `✗ ${res.detail || res.status}`;
+      el.title        = res.detail || '';
       el.className    = `post-result-badge small fw-semibold ${ok ? 'text-success' : 'text-danger'}`;
       el.classList.remove('d-none');
       ok ? posted++ : failed++;

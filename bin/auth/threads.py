@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Threads OAuth flow — opens browser, catches callback, saves token to .env
+Threads OAuth flow — opens browser, catches callback automatically.
 Run once: python bin/auth/threads.py
 """
 import sys
@@ -10,13 +10,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import os
-import time
 import webbrowser
-import threading
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlencode
 from dotenv import load_dotenv, set_key
+from bin.auth._callback_server import wait_for_callback
 
 ENV_FILE = ROOT / ".env"
 load_dotenv(ENV_FILE)
@@ -24,38 +22,11 @@ load_dotenv(ENV_FILE)
 THREADS_AUTH  = "https://threads.net/oauth/authorize"
 THREADS_TOKEN = "https://graph.threads.net/oauth/access_token"
 THREADS_GRAPH = "https://graph.threads.net/v1.0"
-REDIRECT      = "http://localhost:8080/callback"
+REDIRECT      = "https://famjammemes.github.io/famjammemes/"
 SCOPES        = "threads_basic,threads_content_publish"
 
 APP_ID     = os.getenv("THREADS_APP_ID") or input("Threads App ID: ").strip()
 APP_SECRET = os.getenv("THREADS_APP_SECRET") or input("Threads App Secret: ").strip()
-
-auth_code   = None
-server_done = threading.Event()
-
-
-class CallbackHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        global auth_code
-        params = parse_qs(urlparse(self.path).query)
-        if "code" in params:
-            auth_code = params["code"][0]
-            self._respond("<h2>Done — you can close this tab.</h2>")
-            server_done.set()
-        elif "error" in params:
-            self._respond(f"<h2>Error: {params.get('error_description', ['unknown'])[0]}</h2>")
-            server_done.set()
-        else:
-            self._respond("<h2>Waiting...</h2>")
-
-    def _respond(self, body):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(body.encode())
-
-    def log_message(self, *args):
-        pass
 
 
 def exchange_code(code):
@@ -85,25 +56,22 @@ def main():
     })
     auth_url = f"{THREADS_AUTH}?{params}"
 
-    server = HTTPServer(("localhost", 8080), CallbackHandler)
-    t = threading.Thread(target=server.serve_forever)
-    t.daemon = True
-    t.start()
-
     print("\nOpening browser for Threads login...")
     print(f"\n  {auth_url}\n")
-    time.sleep(1)
     webbrowser.open(auth_url)
+    print("Waiting for callback (the browser will redirect automatically)...")
 
-    server_done.wait(timeout=120)
-    server.shutdown()
+    result = wait_for_callback()
 
-    if not auth_code:
-        print("No auth code received.")
+    if "error" in result:
+        print(f"Auth error: {result.get('error_description', result['error'])}")
+        sys.exit(1)
+    if "code" not in result:
+        print("No auth code received — timed out.")
         sys.exit(1)
 
     print("Exchanging for tokens...")
-    short_token, user_id = exchange_code(auth_code)
+    short_token, user_id = exchange_code(result["code"])
     long_token = exchange_long_lived(short_token)
 
     resp = requests.get(f"{THREADS_GRAPH}/{user_id}",

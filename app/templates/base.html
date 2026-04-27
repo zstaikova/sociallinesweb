@@ -13,8 +13,44 @@
     <a class="navbar-brand fw-bold" href="/">
       <i class="bi bi-camera-reels me-2"></i>FamJam
     </a>
-    <span class="text-secondary small">@famjammemes posting console</span>
+    <div class="d-flex align-items-center gap-3">
+      <a class="nav-link text-secondary small" href="/">
+        <i class="bi bi-images me-1"></i>Queue
+      </a>
+      <a class="nav-link text-secondary small" href="/setup">
+        <i class="bi bi-gear me-1"></i>Setup
+      </a>
+      <button id="btn-restart" class="btn btn-outline-warning btn-sm py-0" onclick="restartServer()">
+        <i class="bi bi-arrow-clockwise me-1"></i>Restart
+      </button>
+    </div>
   </nav>
+
+  <div id="restart-banner" class="d-none text-center py-2 bg-warning text-dark fw-semibold small">
+    <span class="spinner-border spinner-border-sm me-2"></span>Restarting server, please wait…
+  </div>
+
+  <script>
+  async function restartServer() {
+    const btn    = document.getElementById('btn-restart');
+    const banner = document.getElementById('restart-banner');
+    btn.disabled = true;
+    banner.classList.remove('d-none');
+
+    await fetch('/api/restart', { method: 'POST' }).catch(() => {});
+
+    // Poll until server is back up
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/');
+        if (r.ok) {
+          clearInterval(poll);
+          location.reload();
+        }
+      } catch (_) {}
+    }, 800);
+  }
+  </script>
 
   <div class="container-fluid py-4 px-4">
     {% block content %}{% endblock %}

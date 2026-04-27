@@ -84,15 +84,11 @@ python auth_tiktok.py
 ```
 
 **Flow:**
-1. Script prints a TikTok auth URL and opens your browser
-2. TikTok shows a consent screen — click **Continue**
-3. TikTok redirects you to your GitHub Pages site
-4. Copy the **full URL** from the browser address bar — it will look like:
-   ```
-   https://<your-site>/?code=XXXX&state=XXXX
-   ```
-5. Paste it into the terminal when prompted
-6. Script exchanges the code for tokens and saves them to `.env`
+1. Script opens your browser to the TikTok consent screen
+2. Click **Continue** to approve
+3. TikTok redirects to your GitHub Pages site with `?code=` in the URL
+4. The page's JavaScript automatically relays the code to `localhost:8080`
+5. Script catches it, exchanges for tokens, saves to `.env`
 
 **Verify:**
 ```bash
