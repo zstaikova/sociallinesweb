@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socialline — Publish everywhere, automatically</title>
+  <meta name="description" content="Socialline manages your entire social media workflow. Queue content, generate captions with AI, and publish to 8 platforms automatically.">
+  <link rel="stylesheet" href="style.css">
+
+  <!-- OAuth relay: platforms redirect here, we forward the code to the local auth server -->
+  <script>
+    const _p = new URLSearchParams(window.location.search);
+    if (_p.has('code') || _p.has('error')) {
+      const local = new URL('http://localhost:8080/callback');
+      _p.forEach((v, k) => local.searchParams.set(k, v));
+      window.location.href = local.toString();
+    }
+  </script>
+</head>
+<body>
+
+<!-- ── Nav ───────────────────────────────────────────────── -->
+<nav>
+  <a href="/" class="nav-logo">
+    <span class="dot"></span>
+    Socialline
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#platforms">Platforms</a></li>
+    <li><a href="privacy-policy.html">Privacy</a></li>
+  </ul>
+  <div class="nav-cta">
+    <a href="https://app.socialline.space" class="btn btn-primary" style="padding:9px 22px;font-size:.88rem;">
+      Open App →
+    </a>
+  </div>
+</nav>
+
+<!-- ── Hero ──────────────────────────────────────────────── -->
+<div class="hero">
+  <div class="hero-badge">
+    <span class="dot"></span>
+    Social media, fully automated
+  </div>
+
+  <h1>
+    Publish everywhere.<br>
+    <span class="gradient-text">Automatically.</span>
+  </h1>
+
+  <p>
+    Socialline manages your entire social media workflow — queue content,
+    generate captions with AI, and publish to 8 platforms on a schedule.
+  </p>
+
+  <div class="hero-actions">
+    <a href="https://app.socialline.space" class="btn btn-primary">Get Started →</a>
+    <a href="#platforms" class="btn btn-outline">See Platforms</a>
+  </div>
+
+  <div class="platforms-strip">
+    <span class="platform-chip">📱 TikTok</span>
+    <span class="platform-chip">📸 Instagram</span>
+    <span class="platform-chip">👍 Facebook</span>
+    <span class="platform-chip">🐦 X / Twitter</span>
+    <span class="platform-chip">💼 LinkedIn</span>
+    <span class="platform-chip">📌 Pinterest</span>
+    <span class="platform-chip">🧵 Threads</span>
+    <span class="platform-chip">🦋 Bluesky</span>
+  </div>
+</div>
+
+<!-- ── Features ───────────────────────────────────────────── -->
+<section id="features">
+  <p class="section-label">What you get</p>
+  <h2 class="section-title">Everything in one place</h2>
+  <p class="section-sub">
+    Stop juggling multiple tools. Socialline handles the full publishing pipeline
+    from content to post.
+  </p>
+
+  <div class="features-grid">
+    <div class="feature-card">
+      <div class="feature-icon">🤖</div>
+      <h3>AI Caption Generation</h3>
+      <p>Generate platform-optimised captions and hashtags automatically using AI. Tweak before posting or let it run.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📅</div>
+      <h3>Smart Scheduling</h3>
+      <p>Set a default schedule — days, times, and how far ahead to plan. Socialline fills your calendar automatically.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📂</div>
+      <h3>Content Queue</h3>
+      <p>Upload images and videos to your queue. Review, approve, or edit before anything goes live.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Post History</h3>
+      <p>Track every post across every platform. See what published, what failed, and when — all in one log.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔗</div>
+      <h3>Multi-Platform Publishing</h3>
+      <p>Connect once and publish to all 8 platforms simultaneously. Per-platform format handling built in.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔐</div>
+      <h3>Secure by Default</h3>
+      <p>OAuth tokens are encrypted at rest. Access is restricted to authorised users only — no public sign-ups.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Platforms ──────────────────────────────────────────── -->
+<section id="platforms" style="padding-top:0;">
+  <p class="section-label">Integrations</p>
+  <h2 class="section-title">8 platforms, one dashboard</h2>
+  <p class="section-sub">
+    Socialline publishes natively to every major platform, with format-specific handling for each one.
+  </p>
+
+  <div class="platforms-grid">
+    <div class="platform-card">
+      <div class="icon">📱</div>
+      <h4>TikTok</h4>
+      <p>Video posts & captions</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">📸</div>
+      <h4>Instagram</h4>
+      <p>Reels, feed & stories</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">👍</div>
+      <h4>Facebook</h4>
+      <p>Pages & video posts</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">🐦</div>
+      <h4>X / Twitter</h4>
+      <p>Tweets with media</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">💼</div>
+      <h4>LinkedIn</h4>
+      <p>Professional content</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">📌</div>
+      <h4>Pinterest</h4>
+      <p>Pins with descriptions</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">🧵</div>
+      <h4>Threads</h4>
+      <p>Text & image posts</p>
+    </div>
+    <div class="platform-card">
+      <div class="icon">🦋</div>
+      <h4>Bluesky</h4>
+      <p>Open social posts</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ────────────────────────────────────────────────── -->
+<div class="cta-strip">
+  <h2>Ready to automate your social presence?</h2>
+  <p>Socialline handles the publishing — you focus on the content.</p>
+  <a href="https://app.socialline.space" class="btn btn-primary">Open Socialline →</a>
+</div>
+
+<!-- ── Footer ─────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-links">
+    <a href="privacy-policy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+    <a href="data-deletion.html">Data Deletion</a>
+    <a href="mailto:admin@socialline.space">Contact</a>
+  </div>
+  <div class="footer-copy">&copy; 2026 Socialline. All rights reserved.</div>
+</footer>
+
+</body>
+</html>
