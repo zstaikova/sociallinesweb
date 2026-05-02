@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="mb-3">
-  <a href="/" class="btn btn-outline-secondary btn-sm">
+  <a href="/queue" class="btn btn-outline-secondary btn-sm">
     <i class="bi bi-arrow-left me-1"></i>Back to queue
   </a>
 </div>
@@ -13,8 +13,14 @@
   <!-- Left: image + core caption -->
   <div class="col-md-4">
     <div class="card shadow-sm">
-      <img src="{{ url_for('serve_queue_image', filename=filename) }}"
+      {% if filename.endswith(('.mp4', '.mov')) %}
+      <video src="{{ url_for('serve_queue_media', filename=filename) }}"
+             class="card-img-top post-preview-img" controls muted preload="metadata"
+             style="background:#000;"></video>
+      {% else %}
+      <img src="{{ url_for('serve_queue_media', filename=filename) }}"
            class="card-img-top post-preview-img" alt="preview">
+      {% endif %}
       <div class="card-body">
         <label class="form-label fw-semibold">Core caption</label>
         <textarea id="core-caption" class="form-control" rows="3"
@@ -41,16 +47,16 @@
           <button class="btn btn-platform active" id="sel-all" onclick="toggleAll()">
             <i class="bi bi-broadcast me-1"></i>ALL
           </button>
-          <button class="btn btn-platform active" id="sel-facebook" onclick="togglePlatform('facebook')">
+          <button class="btn btn-platform" id="sel-facebook" onclick="togglePlatform('facebook')">
             <i class="bi bi-facebook me-1 text-primary"></i>Facebook
           </button>
-          <button class="btn btn-platform active" id="sel-instagram" onclick="togglePlatform('instagram')">
+          <button class="btn btn-platform" id="sel-instagram" onclick="togglePlatform('instagram')">
             <i class="bi bi-instagram me-1 text-danger"></i>Instagram
           </button>
-          <button class="btn btn-platform active" id="sel-threads" onclick="togglePlatform('threads')">
+          <button class="btn btn-platform" id="sel-threads" onclick="togglePlatform('threads')">
             <i class="bi bi-threads me-1"></i>Threads
           </button>
-          <button class="btn btn-platform active" id="sel-x" onclick="togglePlatform('x')">
+          <button class="btn btn-platform" id="sel-x" onclick="togglePlatform('x')">
             <i class="bi bi-twitter-x me-1"></i>X
           </button>
           <button class="btn btn-platform" id="sel-tiktok" onclick="togglePlatform('tiktok')">
@@ -65,6 +71,22 @@
           <button class="btn btn-platform" id="sel-pinterest" onclick="togglePlatform('pinterest')">
             <i class="bi bi-pinterest me-1 text-danger"></i>Pinterest
           </button>
+          <button class="btn btn-platform" id="sel-youtube" onclick="togglePlatform('youtube')">
+            <i class="bi bi-youtube me-1" style="color:#ff0000"></i>YouTube
+          </button>
+        </div>
+      </div>
+      <!-- Not-connected nudge (shown when user clicks a disabled platform) -->
+      <div id="connect-nudge" class="d-none px-3 pb-2">
+        <div class="d-flex align-items-center gap-2 rounded-3 px-3 py-2"
+             style="background:#fff7ed;border:1px solid #fed7aa;font-size:.82rem;">
+          <i class="bi bi-plug text-warning"></i>
+          <span id="connect-nudge-text" class="flex-grow-1 text-warning-emphasis"></span>
+          <a id="connect-nudge-link" href="#" class="btn btn-sm btn-warning py-0 px-2" style="font-size:.78rem;">
+            Set up →
+          </a>
+          <button class="btn-close btn-close-sm ms-1" style="font-size:.6rem;"
+                  onclick="document.getElementById('connect-nudge').classList.add('d-none')"></button>
         </div>
       </div>
     </div>
@@ -80,20 +102,124 @@
         ("bluesky",   "Bluesky",   "bi-cloud",      "",              "#0085ff", 300),
         ("linkedin",  "LinkedIn",  "bi-linkedin",   "",              "#0a66c2", 3000),
         ("pinterest", "Pinterest", "bi-pinterest",  "text-danger",   "#e60023", 500),
+        ("youtube",   "YouTube",   "bi-youtube",    "",              "#ff0000", 100),
       ] %}
 
       {% for pid, pname, icon, color, accent, limit in platforms %}
       <div class="col-12 col-lg-6">
-        <div class="card platform-card shadow-sm" id="card-{{ pid }}" data-platform="{{ pid }}">
+        <div class="card platform-card shadow-sm disabled-card" id="card-{{ pid }}" data-platform="{{ pid }}">
           <div class="card-header d-flex align-items-center justify-content-between py-2"
-               style="border-left: 3px solid {{ accent }};">
+               style="border-left: 3px solid {{ accent }}; cursor:pointer;"
+               onclick="toggleExpand('{{ pid }}')">
             <div class="d-flex align-items-center gap-2">
               <i class="bi {{ icon }} {{ color }} fs-5"></i>
               <span class="fw-semibold">{{ pname }}</span>
+              <span class="text-muted account-label" id="acct-{{ pid }}" style="font-size:.75rem;"></span>
             </div>
-            <span class="platform-status badge bg-success" id="status-{{ pid }}">ON</span>
+            <div class="d-flex align-items-center gap-2">
+              <small class="post-result-badge d-none" id="result-{{ pid }}"></small>
+              <span class="platform-status badge bg-secondary" id="status-{{ pid }}">OFF</span>
+              <i class="bi bi-chevron-down expand-icon text-muted" id="chevron-{{ pid }}" style="font-size:.75rem; transition: transform .2s;"></i>
+            </div>
           </div>
-          <div class="card-body pb-2">
+          {% if pid == "youtube" %}
+          <div class="card-body pb-3 d-none" id="body-youtube">
+            <div class="mb-3">
+              <label class="form-label small fw-semibold mb-1">Privacy</label>
+              <select class="form-select form-select-sm" id="youtube-privacy">
+                <option value="public">Public</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="private">Private</option>
+              </select>
+            </div>
+            <div class="form-check mb-3">
+              <input class="form-check-input" type="checkbox" id="youtube-made-for-kids">
+              <label class="form-check-label small" for="youtube-made-for-kids">
+                Made for Kids
+                <span class="text-muted" style="font-size:.75rem;">(required if content targets children)</span>
+              </label>
+            </div>
+            <div class="text-muted small">
+              <i class="bi bi-info-circle me-1"></i>Video will be posted as a YouTube Short. Title is auto-generated from your caption.
+            </div>
+          </div>
+          {% elif pid == "tiktok" %}
+          <div class="card-body pb-3 d-none" id="body-tiktok">
+            <!-- Creator info banner -->
+            <div id="tiktok-creator-banner" class="alert alert-secondary py-2 small mb-3">
+              <span class="spinner-border spinner-border-sm me-1"></span> Loading account info…
+            </div>
+
+            <!-- Title (= caption) -->
+            <div class="mb-3">
+              <label class="form-label small fw-semibold mb-1">Title</label>
+              <textarea class="form-control platform-caption" id="caption-tiktok"
+                        data-platform="tiktok" data-limit="2200"
+                        rows="3" placeholder="Video title…"></textarea>
+              <small class="char-count text-muted" id="count-tiktok">0 / 2200</small>
+            </div>
+
+            <!-- Privacy -->
+            <div class="mb-3">
+              <label class="form-label small fw-semibold mb-1">Who can view this video</label>
+              <select class="form-select form-select-sm" id="tiktok-privacy">
+                <option value="" disabled selected>Select privacy…</option>
+              </select>
+            </div>
+
+            <!-- Interactions -->
+            <div class="mb-3">
+              <label class="form-label small fw-semibold mb-1">Allow</label>
+              <div class="d-flex gap-3 flex-wrap">
+                <div class="form-check mb-0">
+                  <input class="form-check-input" type="checkbox" id="tiktok-comment">
+                  <label class="form-check-label small" for="tiktok-comment">Comments</label>
+                </div>
+                <div class="form-check mb-0">
+                  <input class="form-check-input" type="checkbox" id="tiktok-duet">
+                  <label class="form-check-label small" for="tiktok-duet">Duet</label>
+                </div>
+                <div class="form-check mb-0">
+                  <input class="form-check-input" type="checkbox" id="tiktok-stitch">
+                  <label class="form-check-label small" for="tiktok-stitch">Stitch</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Content Disclosure -->
+            <div class="border rounded p-3 mb-3">
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="tiktok-disclosure" onchange="onDisclosureChange()">
+                <label class="form-check-label small fw-semibold" for="tiktok-disclosure">
+                  Content Disclosure
+                </label>
+              </div>
+              <div class="text-muted small mb-2" style="font-size:.75rem;">
+                Disclose if this video promotes yourself or a brand.
+              </div>
+              <div id="tiktok-disclosure-options" class="d-none">
+                <div class="form-check mb-1">
+                  <input class="form-check-input" type="checkbox" id="tiktok-brand-organic" onchange="onDisclosureChange()">
+                  <label class="form-check-label small" for="tiktok-brand-organic">Your Brand</label>
+                </div>
+                <div class="form-check mb-2">
+                  <input class="form-check-input" type="checkbox" id="tiktok-branded-content" onchange="onDisclosureChange()">
+                  <label class="form-check-label small" for="tiktok-branded-content">Branded Content (Paid Partnership)</label>
+                </div>
+                <div id="tiktok-legal" class="text-muted" style="font-size:.72rem;"></div>
+              </div>
+            </div>
+
+            <!-- Processing note -->
+            <div class="text-muted small mb-2">
+              <i class="bi bi-info-circle me-1"></i>Processing may take a few minutes after posting.
+            </div>
+
+            <!-- TikTok status (shown after post) -->
+            <div id="tiktok-status-bar" class="d-none mt-2"></div>
+          </div>
+          {% else %}
+          <div class="card-body pb-2 d-none" id="body-{{ pid }}">
             <textarea class="form-control platform-caption" id="caption-{{ pid }}"
                       data-platform="{{ pid }}" data-limit="{{ limit }}"
                       rows="4" placeholder="Caption for {{ pname }}..."></textarea>
@@ -103,23 +229,59 @@
               {% else %}
               <span></span>
               {% endif %}
-              <small class="post-result-badge d-none" id="result-{{ pid }}"></small>
             </div>
           </div>
+          {% endif %}
         </div>
       </div>
       {% endfor %}
     </div>
 
     <!-- Actions -->
-    <div class="d-flex gap-2 mt-4 align-items-center">
+    <div class="d-flex gap-2 mt-4 align-items-center flex-wrap">
       <button id="btn-post" class="btn btn-success px-4">
         <i class="bi bi-send me-1"></i>Post now
       </button>
-      <button class="btn btn-outline-secondary px-4" disabled title="Coming soon">
+      <button id="btn-schedule" class="btn btn-outline-primary px-4" onclick="openScheduleModal()">
         <i class="bi bi-clock me-1"></i>Schedule
       </button>
       <span id="post-summary" class="ms-2 small text-muted d-none"></span>
+      <button id="btn-move-posted" class="btn btn-outline-success px-3 d-none ms-auto"
+              onclick="moveToPosted()">
+        <i class="bi bi-check2-circle me-1"></i>Move to Posted
+      </button>
+    </div>
+
+    <!-- Schedule modal -->
+    <div class="modal fade" id="scheduleModal" tabindex="-1">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content rounded-4">
+          <div class="modal-header border-0 pb-0">
+            <h6 class="modal-title fw-bold"><i class="bi bi-clock me-2 text-primary"></i>Schedule Post</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="sched-err" class="d-none mb-2 small text-danger fw-semibold"></div>
+            <div class="mb-3">
+              <label class="form-label small fw-semibold mb-1">Date &amp; Time</label>
+              <input type="datetime-local" id="sched-datetime" class="form-control">
+              <div class="text-muted" style="font-size:.75rem;margin-top:4px;">
+                All times are local to this machine.
+              </div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label small fw-semibold mb-1">Will post to</label>
+              <div id="sched-platforms-preview" class="d-flex gap-1 flex-wrap"></div>
+            </div>
+          </div>
+          <div class="modal-footer border-0 pt-0">
+            <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-sm btn-primary" onclick="submitSchedule()">
+              <i class="bi bi-calendar-check me-1"></i>Schedule
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -129,8 +291,16 @@
 {% block scripts %}
 <script>
 const FILENAME = {{ filename | tojson }};
-const PLATFORMS = ['facebook', 'instagram', 'threads', 'x', 'tiktok', 'bluesky', 'linkedin', 'pinterest'];
-const selected  = { facebook: true, instagram: true, threads: true, x: true, tiktok: false, bluesky: false, linkedin: false, pinterest: false };
+
+// Seek video preview to first real frame
+document.querySelectorAll('video.post-preview-img').forEach(v => {
+  const seek = () => { if (v.duration) v.currentTime = Math.min(0.5, v.duration * 0.1); };
+  if (v.readyState >= 1) seek();
+  else v.addEventListener('loadedmetadata', seek, { once: true });
+});
+const PLATFORMS = ['facebook', 'instagram', 'threads', 'x', 'tiktok', 'bluesky', 'linkedin', 'pinterest', 'youtube'];
+const selected  = { facebook: false, instagram: false, threads: false, x: false, tiktok: false, bluesky: false, linkedin: false, pinterest: false, youtube: false };
+const connected = {}; // platform → account_name, populated after accounts load
 
 // ── Platform selector ──────────────────────────────────────────
 function updateAllButton() {
@@ -151,12 +321,24 @@ function setSelected(pid, on) {
 }
 
 function togglePlatform(pid) {
+  if (!connected[pid]) {
+    const names = {
+      facebook:'Facebook', instagram:'Instagram', threads:'Threads', x:'X',
+      tiktok:'TikTok', bluesky:'Bluesky', linkedin:'LinkedIn', pinterest:'Pinterest', youtube:'YouTube'
+    };
+    document.getElementById('connect-nudge-text').textContent =
+      `${names[pid] || pid} is not connected. Go to Accounts to enter your credentials.`;
+    document.getElementById('connect-nudge-link').href = '/accounts/' + pid;
+    document.getElementById('connect-nudge').classList.remove('d-none');
+    return;
+  }
   setSelected(pid, !selected[pid]);
 }
 
 function toggleAll() {
-  const allOn = PLATFORMS.every(p => selected[p]);
-  PLATFORMS.forEach(p => setSelected(p, !allOn));
+  const connectedList = PLATFORMS.filter(p => connected[p]);
+  const allOn = connectedList.every(p => selected[p]);
+  connectedList.forEach(p => setSelected(p, !allOn));
 }
 
 // ── Character counters ──────────────────────────────────────────
@@ -189,11 +371,13 @@ document.getElementById('btn-generate').addEventListener('click', async () => {
     const data = await res.json();
     if (data.error) { alert('Error: ' + data.error); return; }
 
-    PLATFORMS.forEach(p => {
+    PLATFORMS.filter(p => selected[p] && connected[p]).forEach(p => {
       const ta = document.getElementById('caption-' + p);
       if (data[p]) {
         ta.value = data[p];
         ta.dispatchEvent(new Event('input'));
+        const body = document.getElementById('body-' + p);
+        if (body && body.classList.contains('d-none')) toggleExpand(p);
       }
     });
   } catch (e) {
@@ -208,7 +392,7 @@ document.getElementById('btn-generate').addEventListener('click', async () => {
 document.getElementById('btn-post').addEventListener('click', async () => {
   const platforms = PLATFORMS.filter(p => selected[p]);
   const captions  = {};
-  platforms.forEach(p => captions[p] = document.getElementById('caption-' + p).value.trim());
+  platforms.forEach(p => captions[p] = (document.getElementById('caption-' + p)?.value || '').trim());
 
   if (!platforms.length) { alert('Select at least one platform.'); return; }
 
@@ -218,40 +402,85 @@ document.getElementById('btn-post').addEventListener('click', async () => {
     return;
   }
 
+  // ── Collect platform-specific options ──
+  const platform_options = {};
+  if (selected['tiktok']) {
+    const privacy        = document.getElementById('tiktok-privacy').value;
+    const disclosure     = document.getElementById('tiktok-disclosure').checked;
+    const brandOrganic   = document.getElementById('tiktok-brand-organic').checked;
+    const brandedContent = document.getElementById('tiktok-branded-content').checked;
+
+    if (!privacy) {
+      alert('Please select a privacy setting for TikTok before posting.');
+      return;
+    }
+    if (disclosure && !brandOrganic && !brandedContent) {
+      alert('Content Disclosure is on — select at least one brand option (Your Brand or Branded Content).');
+      return;
+    }
+
+    platform_options.tiktok = {
+      tiktok_privacy_level:    privacy,
+      tiktok_allow_comment:    document.getElementById('tiktok-comment').checked,
+      tiktok_allow_duet:       document.getElementById('tiktok-duet').checked,
+      tiktok_allow_stitch:     document.getElementById('tiktok-stitch').checked,
+      tiktok_brand_organic:    disclosure && brandOrganic,
+      tiktok_branded_content:  disclosure && brandedContent,
+    };
+  }
+
+  if (selected['youtube']) {
+    platform_options.youtube = {
+      youtube_privacy:        document.getElementById('youtube-privacy').value,
+      youtube_made_for_kids:  document.getElementById('youtube-made-for-kids').checked,
+    };
+  }
+
   const btn = document.getElementById('btn-post');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Posting...';
 
   // Clear previous results
   PLATFORMS.forEach(p => {
-    const r = document.getElementById('result-' + p);
-    r.classList.add('d-none');
+    document.getElementById('result-' + p).classList.add('d-none');
   });
   document.getElementById('post-summary').classList.add('d-none');
+  document.getElementById('tiktok-status-bar').classList.add('d-none');
 
   try {
     const res     = await fetch('/api/publish', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ filename: FILENAME, captions, platforms }),
+      body: JSON.stringify({ filename: FILENAME, captions, platforms, platform_options }),
     });
     const results = await res.json();
 
     let posted = 0, failed = 0;
-    Object.entries(results).forEach(([p, res]) => {
-      const ok  = res.status === 'posted';
-      const el  = document.getElementById('result-' + p);
-      el.textContent  = ok ? '✓ Posted' : `✗ ${res.detail || res.status}`;
-      el.title        = res.detail || '';
-      el.className    = `post-result-badge small fw-semibold ${ok ? 'text-success' : 'text-danger'}`;
+    Object.entries(results).forEach(([p, r]) => {
+      const ok      = r.status === 'posted';
+      const skipped = r.status === 'skipped';
+      const el = document.getElementById('result-' + p);
+      el.textContent = ok ? '✓ Posted' : skipped ? `— ${r.detail}` : `✗ ${r.detail || r.status}`;
+      el.title       = r.detail || '';
+      el.className   = `post-result-badge small fw-semibold ${ok ? 'text-success' : skipped ? 'text-muted' : 'text-danger'}`;
       el.classList.remove('d-none');
-      ok ? posted++ : failed++;
+      if (ok) posted++; else if (!skipped) failed++;
     });
 
     const summary = document.getElementById('post-summary');
     summary.textContent = `${posted} posted${failed ? ', ' + failed + ' failed' : ''}`;
     summary.className   = `ms-2 small fw-semibold ${failed ? 'text-danger' : 'text-success'}`;
     summary.classList.remove('d-none');
+
+    // Show "Move to Posted" if everything succeeded
+    if (!failed) {
+      document.getElementById('btn-move-posted').classList.remove('d-none');
+    }
+
+    // TikTok: poll processing status
+    if (results.tiktok?.status === 'posted' && results.tiktok?.post_id) {
+      pollTikTokStatus(results.tiktok.post_id);
+    }
 
   } catch (e) {
     alert('Post failed: ' + e);
@@ -260,5 +489,254 @@ document.getElementById('btn-post').addEventListener('click', async () => {
     btn.innerHTML = '<i class="bi bi-send me-1"></i>Post now';
   }
 });
+
+// ── TikTok status polling (after post) ──────────────────────────
+async function pollTikTokStatus(publishId) {
+  const bar = document.getElementById('tiktok-status-bar');
+  bar.className = 'alert alert-info py-2 small mt-2';
+  bar.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Processing video on TikTok…';
+  bar.classList.remove('d-none');
+
+  let attempts = 0;
+  const maxAttempts = 20;
+  const interval = setInterval(async () => {
+    attempts++;
+    try {
+      const res  = await fetch('/api/tiktok/status/' + publishId);
+      const data = await res.json();
+      const status = data.status;
+
+      if (status === 'PUBLISH_COMPLETE') {
+        clearInterval(interval);
+        bar.className = 'alert alert-success py-2 small mt-2';
+        bar.innerHTML = '<i class="bi bi-check-circle me-1"></i>Video published successfully on TikTok!';
+      } else if (status === 'FAILED' || status === 'ERROR') {
+        clearInterval(interval);
+        bar.className = 'alert alert-danger py-2 small mt-2';
+        bar.innerHTML = '<i class="bi bi-x-circle me-1"></i>TikTok processing failed. Check TikTok app for details.';
+      } else if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        bar.className = 'alert alert-warning py-2 small mt-2';
+        bar.innerHTML = '<i class="bi bi-clock me-1"></i>Still processing — check TikTok in a few minutes.';
+      }
+      // Otherwise keep polling (PROCESSING_UPLOAD, SEND_TO_REVIEW, etc.)
+    } catch (_) {
+      // Network blip — keep trying
+    }
+  }, 5000);
+}
+
+// ── Expand / collapse caption body ─────────────────────────────
+function toggleExpand(pid) {
+  const body    = document.getElementById('body-' + pid);
+  const chevron = document.getElementById('chevron-' + pid);
+  const expanded = !body.classList.contains('d-none');
+  body.classList.toggle('d-none', expanded);
+  chevron.style.transform = expanded ? '' : 'rotate(180deg)';
+  if (!expanded && pid === 'tiktok') loadTikTokCreatorInfo();
+}
+
+// ── TikTok creator info ─────────────────────────────────────────
+let tiktokCreatorLoaded = false;
+async function loadTikTokCreatorInfo() {
+  if (tiktokCreatorLoaded) return;
+  const banner = document.getElementById('tiktok-creator-banner');
+  const res    = await fetch('/api/tiktok/creator-info');
+  const data   = await res.json();
+
+  if (!data.ok) {
+    banner.className = 'alert alert-warning py-2 small mb-3';
+    banner.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>' + (data.message || 'Could not load creator info');
+    return;
+  }
+
+  const d = data.data;
+  tiktokCreatorLoaded = true;
+
+  banner.className = 'alert alert-success py-2 small mb-3';
+  banner.innerHTML = `<i class="bi bi-person-circle me-1"></i>Posting as <strong>${d.creator_nickname || d.creator_username || 'Unknown'}</strong>`;
+
+  // Populate privacy dropdown
+  const sel = document.getElementById('tiktok-privacy');
+  sel.innerHTML = '<option value="" disabled selected>Select privacy…</option>';
+  const privacyLabels = {
+    'PUBLIC_TO_EVERYONE': 'Public',
+    'MUTUAL_FOLLOW_FRIENDS': 'Friends',
+    'FOLLOWER_OF_CREATOR': 'Followers',
+    'SELF_ONLY': 'Only me (sandbox)',
+  };
+  (d.privacy_level_options || ['SELF_ONLY']).forEach(opt => {
+    const el = document.createElement('option');
+    el.value = opt;
+    el.textContent = privacyLabels[opt] || opt;
+    sel.appendChild(el);
+  });
+  // Default to SELF_ONLY (sandbox safe, required for uncertified apps)
+  sel.value = 'SELF_ONLY';
+
+  // Disable interactions per creator settings
+  if (d.comment_disabled) {
+    const el = document.getElementById('tiktok-comment');
+    el.disabled = true; el.parentElement.title = 'Disabled by your TikTok settings';
+  }
+  if (d.duet_disabled) {
+    const el = document.getElementById('tiktok-duet');
+    el.disabled = true; el.parentElement.title = 'Disabled by your TikTok settings';
+  }
+  if (d.stitch_disabled) {
+    const el = document.getElementById('tiktok-stitch');
+    el.disabled = true; el.parentElement.title = 'Disabled by your TikTok settings';
+  }
+}
+
+function onDisclosureChange() {
+  const disclosureOn    = document.getElementById('tiktok-disclosure').checked;
+  const optionsDiv      = document.getElementById('tiktok-disclosure-options');
+  const brandOrganic    = document.getElementById('tiktok-brand-organic').checked;
+  const brandedContent  = document.getElementById('tiktok-branded-content').checked;
+  const legalDiv        = document.getElementById('tiktok-legal');
+
+  optionsDiv.classList.toggle('d-none', !disclosureOn);
+
+  if (disclosureOn) {
+    // Branded Content requires public/friends only
+    const privacy = document.getElementById('tiktok-privacy');
+    if (brandedContent && privacy.value === 'SELF_ONLY') {
+      privacy.value = 'PUBLIC_TO_EVERYONE';
+    }
+    const selfOnlyOpt = privacy.querySelector('option[value="SELF_ONLY"]');
+    if (selfOnlyOpt) selfOnlyOpt.disabled = brandedContent;
+
+    // Legal links
+    const links = [];
+    if (brandOrganic || (!brandOrganic && !brandedContent)) {
+      links.push('<a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank">Music Usage Confirmation</a>');
+    }
+    if (brandedContent) {
+      links.push('<a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank">Branded Content Policy</a>');
+      links.push('<a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank">Music Usage Confirmation</a>');
+    }
+    legalDiv.innerHTML = links.length ? 'By posting, you agree to: ' + links.join(' · ') : '';
+  }
+}
+
+// ── Schedule ─────────────────────────────────────────────────────
+function openScheduleModal() {
+  const platforms = PLATFORMS.filter(p => selected[p]);
+  if (!platforms.length) { alert('Select at least one platform.'); return; }
+
+  // Default to next hour
+  const dt = new Date();
+  dt.setHours(dt.getHours() + 1, 0, 0, 0);
+  const local = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000)
+    .toISOString().slice(0, 16);
+  document.getElementById('sched-datetime').value = local;
+  document.getElementById('sched-datetime').min = local;
+
+  // Preview platforms
+  const chips = platforms.map(p =>
+    `<span style="font-size:.75rem;padding:2px 9px;border-radius:10px;background:#eef2ff;color:#4361ee;font-weight:500;">${p}</span>`
+  ).join('');
+  document.getElementById('sched-platforms-preview').innerHTML = chips;
+
+  document.getElementById('sched-err').classList.add('d-none');
+  new bootstrap.Modal(document.getElementById('scheduleModal')).show();
+}
+
+async function submitSchedule() {
+  const platforms = PLATFORMS.filter(p => selected[p]);
+  const captions  = {};
+  platforms.forEach(p => captions[p] = (document.getElementById('caption-' + p)?.value || '').trim());
+  const scheduledAt = document.getElementById('sched-datetime').value;
+  const errEl = document.getElementById('sched-err');
+
+  if (!scheduledAt) {
+    errEl.textContent = 'Please select a date and time.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+
+  const empty = platforms.filter(p => !captions[p]);
+  if (empty.length) {
+    errEl.textContent = `Missing captions for: ${empty.join(', ')}. Generate or write them first.`;
+    errEl.classList.remove('d-none');
+    return;
+  }
+
+  // Collect TikTok options if selected
+  const platform_options = {};
+  if (selected['tiktok']) {
+    const privacy = document.getElementById('tiktok-privacy').value;
+    if (!privacy) {
+      errEl.textContent = 'Select a TikTok privacy setting before scheduling.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    platform_options.tiktok = {
+      tiktok_privacy_level:   privacy,
+      tiktok_allow_comment:   document.getElementById('tiktok-comment').checked,
+      tiktok_allow_duet:      document.getElementById('tiktok-duet').checked,
+      tiktok_allow_stitch:    document.getElementById('tiktok-stitch').checked,
+      tiktok_brand_organic:   false,
+      tiktok_branded_content: false,
+    };
+  }
+
+  if (selected['youtube']) {
+    platform_options.youtube = {
+      youtube_privacy:       document.getElementById('youtube-privacy').value,
+      youtube_made_for_kids: document.getElementById('youtube-made-for-kids').checked,
+    };
+  }
+
+  const r = await fetch('/api/schedule', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ filename: FILENAME, captions, platforms, platform_options, scheduled_at: scheduledAt }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    bootstrap.Modal.getInstance(document.getElementById('scheduleModal')).hide();
+    window.location.href = '/calendar';
+  } else {
+    errEl.textContent = d.error || 'Failed to schedule post.';
+    errEl.classList.remove('d-none');
+  }
+}
+
+// ── Move to posted ──────────────────────────────────────────────
+async function moveToPosted() {
+  const btn = document.getElementById('btn-move-posted');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Moving…';
+  await fetch('/api/queue/' + encodeURIComponent(FILENAME) + '/move-to-posted', {method: 'POST'});
+  window.location.href = '/queue';
+}
+
+// ── Load active accounts — drives ON/OFF state ──────────────────
+(async () => {
+  const res  = await fetch('/api/accounts');
+  const list = await res.json();
+  list.forEach(a => { if (a.active && a.has_credentials) connected[a.platform] = a.account_name; });
+  PLATFORMS.forEach(p => {
+    const nameEl = document.getElementById('acct-' + p);
+    if (nameEl) nameEl.textContent = connected[p] || '';
+    const btn = document.getElementById('sel-' + p);
+    if (connected[p]) {
+      setSelected(p, true);
+    } else {
+      if (btn) {
+        btn.style.opacity = '0.35';
+        btn.title = 'Not connected';
+      }
+    }
+  });
+
+  // Auto-open schedule modal if coming from queue "Schedule" button
+  if (new URLSearchParams(location.search).get('schedule') === '1') {
+    // Small delay so the modal script is ready
+    setTimeout(openScheduleModal, 300);
+  }
+})();
 </script>
 {% endblock %}
