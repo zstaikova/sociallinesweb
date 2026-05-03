@@ -72,6 +72,7 @@ PLATFORM_ENV_KEYS: dict[str, list[str]] = {
     "reddit":    ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"],
     "youtube":   ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
                   "YOUTUBE_ACCESS_TOKEN", "YOUTUBE_REFRESH_TOKEN"],
+    "telegram":  ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
 }
 
 

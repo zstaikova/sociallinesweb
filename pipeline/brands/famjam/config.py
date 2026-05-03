@@ -85,6 +85,10 @@ def create_pipeline(platforms: list, store: ContentStore = None,
         from pipeline.platforms.pinterest.publisher import PinterestPublisher
         platform_configs.append(PlatformConfig(publisher=PinterestPublisher(_creds("pinterest"))))
 
+    if "telegram" in platforms and _has_creds("telegram"):
+        from pipeline.platforms.telegram.publisher import TelegramPublisher
+        platform_configs.append(PlatformConfig(publisher=TelegramPublisher(_creds("telegram"))))
+
     if "youtube" in platforms and _has_creds("youtube"):
         from pipeline.platforms.youtube.publisher import YouTubePublisher
         from pipeline.platforms.tiktok.remotion_transformer import from_spec as remotion_for

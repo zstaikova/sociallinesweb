@@ -74,6 +74,9 @@
           <button class="btn btn-platform" id="sel-youtube" onclick="togglePlatform('youtube')">
             <i class="bi bi-youtube me-1" style="color:#ff0000"></i>YouTube
           </button>
+          <button class="btn btn-platform" id="sel-telegram" onclick="togglePlatform('telegram')">
+            <i class="bi bi-telegram me-1" style="color:#229ed9"></i>Telegram
+          </button>
         </div>
       </div>
       <!-- Not-connected nudge (shown when user clicks a disabled platform) -->
@@ -103,6 +106,7 @@
         ("linkedin",  "LinkedIn",  "bi-linkedin",   "",              "#0a66c2", 3000),
         ("pinterest", "Pinterest", "bi-pinterest",  "text-danger",   "#e60023", 500),
         ("youtube",   "YouTube",   "bi-youtube",    "",              "#ff0000", 100),
+        ("telegram",  "Telegram",  "bi-telegram",   "",              "#229ed9", 1024),
       ] %}
 
       {% for pid, pname, icon, color, accent, limit in platforms %}
@@ -298,8 +302,8 @@ document.querySelectorAll('video.post-preview-img').forEach(v => {
   if (v.readyState >= 1) seek();
   else v.addEventListener('loadedmetadata', seek, { once: true });
 });
-const PLATFORMS = ['facebook', 'instagram', 'threads', 'x', 'tiktok', 'bluesky', 'linkedin', 'pinterest', 'youtube'];
-const selected  = { facebook: false, instagram: false, threads: false, x: false, tiktok: false, bluesky: false, linkedin: false, pinterest: false, youtube: false };
+const PLATFORMS = ['facebook', 'instagram', 'threads', 'x', 'tiktok', 'bluesky', 'linkedin', 'pinterest', 'youtube', 'telegram'];
+const selected  = { facebook: false, instagram: false, threads: false, x: false, tiktok: false, bluesky: false, linkedin: false, pinterest: false, youtube: false, telegram: false };
 const connected = {}; // platform → account_name, populated after accounts load
 
 // ── Platform selector ──────────────────────────────────────────
@@ -324,7 +328,7 @@ function togglePlatform(pid) {
   if (!connected[pid]) {
     const names = {
       facebook:'Facebook', instagram:'Instagram', threads:'Threads', x:'X',
-      tiktok:'TikTok', bluesky:'Bluesky', linkedin:'LinkedIn', pinterest:'Pinterest', youtube:'YouTube'
+      tiktok:'TikTok', bluesky:'Bluesky', linkedin:'LinkedIn', pinterest:'Pinterest', youtube:'YouTube', telegram:'Telegram'
     };
     document.getElementById('connect-nudge-text').textContent =
       `${names[pid] || pid} is not connected. Go to Accounts to enter your credentials.`;

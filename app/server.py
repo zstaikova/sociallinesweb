@@ -252,6 +252,26 @@ SETUP_PLATFORMS = [
         "verify_cmd": "tiktok",
     },
     {
+        "id": "telegram", "name": "Telegram", "icon": "bi-telegram", "color": "#229ed9",
+        "note": "Posts to a Telegram channel via Bot API — no app review needed",
+        "type": "manual",
+        "keys_required": ["TELEGRAM_BOT_TOKEN"],
+        "form_fields": [
+            {"key": "TELEGRAM_BOT_TOKEN", "label": "Bot Token", "type": "password",
+             "help": "Create via @BotFather → /newbot → copy the token"},
+            {"key": "TELEGRAM_CHAT_ID",   "label": "Channel ID",
+             "help": "@yourchannelname or numeric ID — forward a message to @userinfobot to find it"},
+        ],
+        "steps": [
+            ("Open Telegram, message", "@BotFather"),
+            ("Send /newbot, follow the steps, copy the token", ""),
+            ("Add the bot as admin to your channel (Post Messages permission)", ""),
+            ("Get channel ID: forward a channel message to", "@userinfobot"),
+        ],
+        "auth_script": None,
+        "verify_cmd": "telegram",
+    },
+    {
         "id": "youtube", "name": "YouTube", "icon": "bi-youtube", "color": "#ff0000",
         "note": "Posts videos as YouTube Shorts to your channel",
         "type": "oauth",
@@ -962,6 +982,7 @@ def _make_publisher(platform_id: str, credentials: dict = None):
         "linkedin":  ("pipeline.platforms.linkedin.publisher",  "LinkedInPublisher"),
         "pinterest": ("pipeline.platforms.pinterest.publisher", "PinterestPublisher"),
         "youtube":   ("pipeline.platforms.youtube.publisher",   "YouTubePublisher"),
+        "telegram":  ("pipeline.platforms.telegram.publisher",  "TelegramPublisher"),
     }
     if platform_id not in mapping:
         return None
@@ -1079,6 +1100,7 @@ _USER_TOKEN_KEYS: dict[str, list[str]] = {
     "linkedin":  ["LINKEDIN_ACCESS_TOKEN", "LINKEDIN_PERSON_URN"],
     "pinterest": ["PINTEREST_ACCESS_TOKEN", "PINTEREST_BOARD_ID"],
     "youtube":   ["YOUTUBE_ACCESS_TOKEN", "YOUTUBE_REFRESH_TOKEN"],
+    "telegram":  ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
     "reddit":    ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"],
 }
 
