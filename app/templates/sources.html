@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+{% block title %}Sources — Socialline{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <h4 class="mb-0">Content Sources</h4>
+  <button class="btn btn-primary btn-sm" onclick="showAddPanel()">
+    <i class="bi bi-plus-lg me-1"></i>Add Source
+  </button>
+</div>
+
+<!-- Add/Edit panel -->
+<div id="add-panel" class="card shadow-sm mb-4 d-none">
+  <div class="card-body p-4">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <h6 class="fw-bold mb-0" id="panel-title">Add Source</h6>
+      <button class="btn btn-sm btn-outline-secondary" onclick="hideAddPanel()">Cancel</button>
+    </div>
+
+    <div id="panel-err" class="d-none mb-3 small text-danger fw-semibold"></div>
+
+    <div class="row g-3">
+      <div class="col-12 col-sm-6 col-lg-4">
+        <label class="form-label small fw-semibold mb-1">Name</label>
+        <input type="text" id="src-name" class="form-control form-control-sm" placeholder="e.g. r/memes hot">
+      </div>
+      <div class="col-12 col-sm-6 col-lg-4">
+        <label class="form-label small fw-semibold mb-1">Type</label>
+        <select id="src-type" class="form-select form-select-sm" onchange="onTypeChange()">
+          <option value="">Select type…</option>
+          <option value="reddit">Reddit</option>
+          <option value="google">Google Search</option>
+          <option value="url">Direct URL</option>
+          <option value="article">Article (summarise)</option>
+          <option value="folder">Local Folder</option>
+          <option value="website">Website scrape</option>
+        </select>
+      </div>
+      <div class="col-12 col-sm-6 col-lg-4">
+        <label class="form-label small fw-semibold mb-1">Auto-pull schedule</label>
+        <select id="src-schedule" class="form-select form-select-sm">
+          <option value="">Manual only</option>
+          <option value="hourly">Every hour</option>
+          <option value="6h">Every 6 hours</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Dynamic config fields per type -->
+    <div id="type-fields" class="mt-3"></div>
+
+    <div class="mt-4 d-flex gap-2">
+      <button class="btn btn-primary btn-sm" onclick="saveSource()">
+        <i class="bi bi-check-lg me-1"></i>Save Source
+      </button>
+      <button class="btn btn-outline-secondary btn-sm" onclick="hideAddPanel()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Sources list -->
+<div id="sources-list">
+  <div class="text-center text-muted py-5" id="sources-empty">
+    <i class="bi bi-collection" style="font-size:2.5rem;opacity:.3;"></i>
+    <div class="mt-2">No sources yet. Add one to start pulling content.</div>
+  </div>
+</div>
+
+<!-- Pull result toast -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999;">
+  <div id="pull-toast" class="toast align-items-center text-white border-0" role="alert">
+    <div class="d-flex">
+      <div class="toast-body fw-semibold" id="pull-toast-msg"></div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .source-card {
+    background: #fff; border-radius: 12px; border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 4px rgba(0,0,0,.05); padding: 14px 16px;
+    margin-bottom: 10px; display: flex; align-items: center; gap: 14px;
+  }
+  .source-icon {
+    width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 1.1rem;
+  }
+  .source-meta { font-size: .75rem; color: #6b7280; margin-top: 2px; }
+  .source-actions { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+  .btn-pull {
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 7px; font-size: .78rem; font-weight: 600;
+    background: #eef2ff; color: #4361ee; border: 1px solid #c7d2fe;
+    cursor: pointer; transition: background .15s;
+  }
+  .btn-pull:hover { background: #e0e7ff; }
+  .btn-pull:disabled { opacity: .5; cursor: default; }
+</style>
+
+<script>
+const TYPE_META = {
+  reddit:  { icon: 'bi-reddit',      color: '#ff4500', label: 'Reddit' },
+  google:  { icon: 'bi-google',      color: '#4285f4', label: 'Google Search' },
+  url:     { icon: 'bi-link-45deg',  color: '#6b7280', label: 'Direct URL' },
+  article: { icon: 'bi-newspaper',   color: '#059669', label: 'Article' },
+  folder:  { icon: 'bi-folder2',     color: '#d97706', label: 'Local Folder' },
+  website: { icon: 'bi-globe',       color: '#7c3aed', label: 'Website' },
+};
+
+const TYPE_FIELDS = {
+  reddit: `
+    <div class="row g-2">
+      <div class="col-sm-4">
+        <label class="form-label small fw-semibold mb-1">Subreddit</label>
+        <input type="text" class="form-control form-control-sm" id="cfg-subreddit" placeholder="memes">
+      </div>
+      <div class="col-sm-3">
+        <label class="form-label small fw-semibold mb-1">Sort</label>
+        <select class="form-select form-select-sm" id="cfg-sort">
+          <option value="hot">Hot</option>
+          <option value="top">Top</option>
+          <option value="new">New</option>
+        </select>
+      </div>
+      <div class="col-sm-3">
+        <label class="form-label small fw-semibold mb-1">Time filter</label>
+        <select class="form-select form-select-sm" id="cfg-time_filter">
+          <option value="day">Today</option>
+          <option value="week">This week</option>
+          <option value="month">This month</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+      <div class="col-sm-2">
+        <label class="form-label small fw-semibold mb-1">Limit</label>
+        <input type="number" class="form-control form-control-sm" id="cfg-limit" value="10" min="1" max="50">
+      </div>
+      <div class="col-sm-3">
+        <label class="form-label small fw-semibold mb-1">Min score</label>
+        <input type="number" class="form-control form-control-sm" id="cfg-min_score" value="100" min="0">
+      </div>
+    </div>`,
+
+  google: `
+    <div class="row g-2">
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">Search query / theme</label>
+        <input type="text" class="form-control form-control-sm" id="cfg-query" placeholder="funny parenting memes">
+      </div>
+      <div class="col-sm-4">
+        <label class="form-label small fw-semibold mb-1">Search type</label>
+        <select class="form-select form-select-sm" id="cfg-search_type">
+          <option value="image">Images</option>
+          <option value="web">Web / Articles</option>
+        </select>
+      </div>
+      <div class="col-sm-4">
+        <label class="form-label small fw-semibold mb-1">Date range</label>
+        <select class="form-select form-select-sm" id="cfg-date_restrict">
+          <option value="">Any time</option>
+          <option value="d1">Last 24 hours</option>
+          <option value="d7">Last 7 days</option>
+          <option value="m1">Last month</option>
+        </select>
+      </div>
+      <div class="col-sm-4">
+        <label class="form-label small fw-semibold mb-1">Limit</label>
+        <input type="number" class="form-control form-control-sm" id="cfg-limit" value="10" min="1" max="10">
+      </div>
+      <div class="col-12">
+        <div class="alert alert-info py-2 small mb-0">
+          <i class="bi bi-info-circle me-1"></i>
+          Requires <strong>GOOGLE_SEARCH_API_KEY</strong> and <strong>GOOGLE_SEARCH_CX</strong> in your .env file.
+          <a href="https://programmablesearchengine.google.com" target="_blank">Get API key →</a>
+        </div>
+      </div>
+    </div>`,
+
+  url: `
+    <div class="row g-2">
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">URL</label>
+        <input type="url" class="form-control form-control-sm" id="cfg-url" placeholder="https://...">
+      </div>
+      <div class="col-sm-6">
+        <label class="form-label small fw-semibold mb-1">Title (optional caption seed)</label>
+        <input type="text" class="form-control form-control-sm" id="cfg-title" placeholder="">
+      </div>
+    </div>`,
+
+  article: `
+    <div class="row g-2">
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">Article URL</label>
+        <input type="url" class="form-control form-control-sm" id="cfg-url" placeholder="https://...">
+        <div class="text-muted mt-1" style="font-size:.75rem;">AI summarises the article and pre-fills the caption when you open it in the editor.</div>
+      </div>
+      <div class="col-sm-4">
+        <label class="form-label small fw-semibold mb-1">Summary style</label>
+        <select class="form-select form-select-sm" id="cfg-style">
+          <option value="bullets">Bullet points</option>
+          <option value="paragraph">Short paragraph</option>
+        </select>
+      </div>
+      <div class="col-sm-3">
+        <label class="form-label small fw-semibold mb-1">Max bullets</label>
+        <input type="number" class="form-control form-control-sm" id="cfg-max_bullets" value="5" min="3" max="8">
+      </div>
+    </div>`,
+
+  folder: `
+    <div class="row g-2">
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">Folder path</label>
+        <input type="text" class="form-control form-control-sm" id="cfg-path" placeholder="C:\\Users\\...\\content">
+      </div>
+    </div>`,
+
+  website: `
+    <div class="row g-2">
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">Website URL</label>
+        <input type="url" class="form-control form-control-sm" id="cfg-url" placeholder="https://...">
+      </div>
+      <div class="col-sm-6">
+        <label class="form-label small fw-semibold mb-1">CSS selector for images</label>
+        <input type="text" class="form-control form-control-sm" id="cfg-selector" value="img" placeholder="img, .post img, etc.">
+      </div>
+      <div class="col-sm-3">
+        <label class="form-label small fw-semibold mb-1">Limit</label>
+        <input type="number" class="form-control form-control-sm" id="cfg-limit" value="10" min="1" max="50">
+      </div>
+    </div>`,
+};
+
+let _editId = null;
+
+function onTypeChange() {
+  const type = document.getElementById('src-type').value;
+  document.getElementById('type-fields').innerHTML = TYPE_FIELDS[type] || '';
+}
+
+function showAddPanel(source = null) {
+  _editId = source ? source.id : null;
+  document.getElementById('panel-title').textContent = source ? 'Edit Source' : 'Add Source';
+  document.getElementById('src-name').value     = source?.name || '';
+  document.getElementById('src-schedule').value = source?.schedule || '';
+  document.getElementById('panel-err').classList.add('d-none');
+
+  const typeEl = document.getElementById('src-type');
+  typeEl.value = source?.type || '';
+  onTypeChange();
+
+  // Fill config fields
+  if (source?.config) {
+    Object.entries(source.config).forEach(([k, v]) => {
+      const el = document.getElementById('cfg-' + k);
+      if (el) el.value = v;
+    });
+  }
+
+  document.getElementById('add-panel').classList.remove('d-none');
+  document.getElementById('add-panel').scrollIntoView({ behavior: 'smooth' });
+}
+
+function hideAddPanel() {
+  document.getElementById('add-panel').classList.add('d-none');
+  _editId = null;
+}
+
+function collectConfig(type) {
+  const cfg = {};
+  document.querySelectorAll('#type-fields [id^="cfg-"]').forEach(el => {
+    const key = el.id.replace('cfg-', '');
+    const val = el.type === 'number' ? (parseInt(el.value) || 0) : el.value;
+    if (val !== '' && val !== 0) cfg[key] = val;
+  });
+  return cfg;
+}
+
+async function saveSource() {
+  const name     = document.getElementById('src-name').value.trim();
+  const type     = document.getElementById('src-type').value;
+  const schedule = document.getElementById('src-schedule').value || null;
+  const errEl    = document.getElementById('panel-err');
+
+  if (!name || !type) {
+    errEl.textContent = 'Name and type are required.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+
+  const config = collectConfig(type);
+
+  const method = _editId ? 'PUT' : 'POST';
+  const url    = _editId ? `/api/sources/${_editId}` : '/api/sources';
+  const r = await fetch(url, {
+    method,
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name, type, config, schedule }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    hideAddPanel();
+    loadSources();
+  } else {
+    errEl.textContent = d.error || 'Failed to save source.';
+    errEl.classList.remove('d-none');
+  }
+}
+
+async function deleteSource(id, name) {
+  if (!confirm(`Delete source "${name}"?`)) return;
+  await fetch(`/api/sources/${id}`, { method: 'DELETE' });
+  loadSources();
+}
+
+async function toggleSource(id, enabled) {
+  await fetch(`/api/sources/${id}`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled: !enabled }),
+  });
+  loadSources();
+}
+
+async function pullNow(id, btnEl) {
+  btnEl.disabled = true;
+  btnEl.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  try {
+    const r = await fetch(`/api/sources/${id}/pull`, { method: 'POST' });
+    const d = await r.json();
+    showToast(
+      d.ok ? `Added ${d.added} item${d.added !== 1 ? 's' : ''} to queue` : `Error: ${d.error}`,
+      d.ok ? '#16a34a' : '#dc2626'
+    );
+    if (d.ok) loadSources();
+  } catch (e) {
+    showToast('Pull failed: ' + e, '#dc2626');
+  } finally {
+    btnEl.disabled = false;
+    btnEl.innerHTML = '<i class="bi bi-arrow-down-circle me-1"></i>Pull now';
+  }
+}
+
+async function loadSources() {
+  const r = await fetch('/api/sources');
+  const sources = await r.json();
+  const container = document.getElementById('sources-list');
+  const empty = document.getElementById('sources-empty');
+
+  if (!sources.length) {
+    container.innerHTML = '';
+    container.appendChild(empty);
+    empty.classList.remove('d-none');
+    return;
+  }
+
+  container.innerHTML = sources.map(s => {
+    const m = TYPE_META[s.type] || { icon: 'bi-question', color: '#9ca3af', label: s.type };
+    const lastPulled = s.last_pulled
+      ? `Last pulled ${fmtRelative(s.last_pulled)} · ${s.last_count} items`
+      : 'Never pulled';
+    const schedLabel = s.schedule ? `· ${s.schedule}` : '';
+    return `
+    <div class="source-card" style="opacity:${s.enabled ? 1 : .5};">
+      <div class="source-icon" style="background:${m.color}18;">
+        <i class="bi ${m.icon}" style="color:${m.color};"></i>
+      </div>
+      <div class="flex-grow-1 min-width-0">
+        <div class="fw-semibold text-truncate">${escHtml(s.name)}</div>
+        <div class="source-meta">
+          <span class="me-2">${m.label}</span>
+          <span class="me-2">${escHtml(configSummary(s.type, s.config))}</span>
+          <span>${lastPulled} ${schedLabel}</span>
+        </div>
+      </div>
+      <div class="source-actions">
+        <button class="btn-pull" id="pull-btn-${s.id}"
+                onclick="pullNow('${s.id}', this)">
+          <i class="bi bi-arrow-down-circle me-1"></i>Pull now
+        </button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem;"
+                onclick='showAddPanel(${JSON.stringify(s)})' title="Edit">
+          <i class="bi bi-pencil"></i>
+        </button>
+        <div class="form-check form-switch mb-0 d-flex align-items-center" style="padding-left:2.5rem;">
+          <input class="form-check-input" type="checkbox" ${s.enabled ? 'checked' : ''}
+                 onchange="toggleSource('${s.id}', ${s.enabled})" title="${s.enabled ? 'Disable' : 'Enable'}">
+        </div>
+        <button class="btn btn-outline-danger btn-sm py-0 px-2" style="font-size:.75rem;"
+                onclick="deleteSource('${s.id}','${escHtml(s.name)}')" title="Delete">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function configSummary(type, cfg) {
+  if (type === 'reddit')  return `r/${cfg.subreddit || '?'} · ${cfg.sort || 'hot'}`;
+  if (type === 'google')  return cfg.query || '';
+  if (type === 'url')     return (cfg.url || '').slice(0, 40);
+  if (type === 'article') return (cfg.url || '').slice(0, 40);
+  if (type === 'folder')  return (cfg.path || '').slice(0, 40);
+  if (type === 'website') return (cfg.url || '').slice(0, 40);
+  return '';
+}
+
+function fmtRelative(iso) {
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60)   return 'just now';
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+function showToast(msg, bg = '#16a34a') {
+  const el = document.getElementById('pull-toast');
+  document.getElementById('pull-toast-msg').textContent = msg;
+  el.style.background = bg;
+  new bootstrap.Toast(el, { delay: 4000 }).show();
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+loadSources();
+</script>
+{% endblock %}

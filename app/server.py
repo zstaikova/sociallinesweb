@@ -652,20 +652,49 @@ def editor(filename):
     image_path = QUEUE_DIR / filename
     if not image_path.exists():
         return "Image not found", 404
-    caption = image_path.stem.replace("_", " ").replace("-", " ")
-    return render_template("editor.html", filename=filename, caption=caption)
+
+    # Load pre-generated caption sidecar if present (e.g. from article source)
+    caption_sidecar = QUEUE_DIR / (image_path.stem + ".caption.txt")
+    if caption_sidecar.exists():
+        caption = caption_sidecar.read_text(encoding="utf-8").strip()
+    else:
+        caption = image_path.stem.replace("_", " ").replace("-", " ")
+
+    # Check if this came from an article source
+    article_sidecar = QUEUE_DIR / (image_path.stem + ".article.json")
+    is_article = article_sidecar.exists()
+
+    return render_template("editor.html", filename=filename, caption=caption,
+                           is_article=is_article)
 
 
 @app.route("/api/generate-captions", methods=["POST"])
 @login_required
 def api_generate_captions():
-    from caption_ai import generate_platform_captions
-    data = request.get_json()
-    core_caption = (data or {}).get("caption", "").strip()
+    from caption_ai import generate_platform_captions, generate_article_captions
+    data         = request.get_json() or {}
+    core_caption = data.get("caption", "").strip()
+    filename     = data.get("filename", "").strip()
     if not core_caption:
         return jsonify({"error": "No caption provided"}), 400
+
+    # Detect article content — check for sidecar or explicit flag
+    is_article = False
+    article_meta = {}
+    if filename:
+        article_sidecar = QUEUE_DIR / (Path(filename).stem + ".article.json")
+        caption_sidecar = QUEUE_DIR / (Path(filename).stem + ".caption.txt")
+        if article_sidecar.exists():
+            is_article = True
+            article_meta = json.loads(article_sidecar.read_text(encoding="utf-8"))
+        elif caption_sidecar.exists():
+            is_article = True  # came from article source even if no .article.json
+
     try:
-        captions = generate_platform_captions(core_caption)
+        if is_article:
+            captions = generate_article_captions(core_caption, article_meta)
+        else:
+            captions = generate_platform_captions(core_caption)
         return jsonify(captions)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

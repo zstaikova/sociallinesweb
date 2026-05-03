@@ -23,7 +23,12 @@
       {% endif %}
       <div class="card-body">
         <label class="form-label fw-semibold">Core caption</label>
-        <textarea id="core-caption" class="form-control" rows="3"
+        {% if is_article %}
+        <div class="alert alert-info py-2 small mb-2">
+          <i class="bi bi-newspaper me-1"></i>Article summary pre-loaded — edit if needed, then generate captions.
+        </div>
+        {% endif %}
+        <textarea id="core-caption" class="form-control" rows="{{ 6 if is_article else 3 }}"
                   placeholder="Write a caption...">{{ caption }}</textarea>
         <button id="btn-generate" class="btn btn-primary w-100 mt-2">
           <i class="bi bi-stars me-1"></i>Generate AI captions
@@ -370,7 +375,7 @@ document.getElementById('btn-generate').addEventListener('click', async () => {
     const res  = await fetch('/api/generate-captions', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ caption }),
+      body: JSON.stringify({ caption, filename: '{{ filename }}' }),
     });
     const data = await res.json();
     if (data.error) { alert('Error: ' + data.error); return; }
