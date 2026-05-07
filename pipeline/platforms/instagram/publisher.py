@@ -10,28 +10,31 @@ FB_GRAPH  = "https://graph.facebook.com/v19.0"
 
 
 class InstagramPublisher(BasePublisher):
-    def __init__(self, ig_account_id: str = None, access_token: str = None):
-        self.ig_account_id = ig_account_id or os.environ["INSTAGRAM_ACCOUNT_ID"]
-        self.access_token  = access_token or os.environ["INSTAGRAM_ACCESS_TOKEN"]
-        # Facebook Page used only for staging images on CDN
-        self.page_id         = os.environ["FACEBOOK_PAGE_ID"]
-        self.fb_page_token   = os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
+    def __init__(self, credentials: dict = None):
+        _c = credentials or {}
+        self.ig_account_id = _c.get("INSTAGRAM_ACCOUNT_ID")       or os.environ["INSTAGRAM_ACCOUNT_ID"]
+        self.access_token  = _c.get("INSTAGRAM_ACCESS_TOKEN")      or os.environ["INSTAGRAM_ACCESS_TOKEN"]
+        self.page_id       = _c.get("FACEBOOK_PAGE_ID")            or os.environ["FACEBOOK_PAGE_ID"]
+        self.fb_page_token = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN")  or os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
 
-    def verify_auth(self) -> bool:
+    def get_account_info(self) -> "dict | None":
         resp = requests.get(
             f"{IG_GRAPH}/{self.ig_account_id}",
-            params={
-                "fields": "id,username,name",
-                "access_token": self.access_token,
-            },
+            params={"fields": "id,username,name", "access_token": self.access_token},
             timeout=10,
         )
         if resp.ok:
             data = resp.json()
-            handle = data.get("username") or data.get("name")
-            print(f"Instagram auth OK — account: @{handle} ({data.get('id')})")
+            name = data.get("username") or data.get("name", "")
+            return {"name": f"@{name}", "id": str(data.get("id", ""))}
+        return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"Instagram auth OK — account: {info['name']} ({info['id']})")
             return True
-        print(f"Instagram auth failed: {resp.text}")
+        print("Instagram auth failed")
         return False
 
     def publish(self, item: ContentItem) -> bool:

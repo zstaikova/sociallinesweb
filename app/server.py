@@ -24,9 +24,10 @@ from dotenv import load_dotenv, set_key
 load_dotenv(ROOT / ".env")
 
 from flask import Flask, render_template, request, jsonify, send_from_directory, session, redirect
+from urllib.parse import urlencode
 from pipeline.core.accounts import AccountStore
 from users import UserStore
-from scheduler import ScheduleStore, start_scheduler
+from scheduler import ScheduleStore, start_scheduler, start_source_puller
 
 ENV_FILE   = ROOT / ".env"
 DATA_DIR   = ROOT / "data"
@@ -156,6 +157,7 @@ SETUP_PLATFORMS = [
         "note": "Uses your Facebook app — connect Facebook first",
         "type": "derived",
         "keys_required": ["INSTAGRAM_ACCOUNT_ID"],
+        "auth_script": "bin/auth/instagram_direct.py",
         "steps": [
             ("Connect Facebook first (same app, same credentials)", ""),
             ("Make sure your Instagram Business account is linked to your Facebook Page", ""),
@@ -255,18 +257,20 @@ SETUP_PLATFORMS = [
         "id": "telegram", "name": "Telegram", "icon": "bi-telegram", "color": "#229ed9",
         "note": "Posts to a Telegram channel via Bot API — no app review needed",
         "type": "manual",
-        "keys_required": ["TELEGRAM_BOT_TOKEN"],
-        "form_fields": [
+        "keys_required": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
+        "prereq_fields": [
             {"key": "TELEGRAM_BOT_TOKEN", "label": "Bot Token", "type": "password",
              "help": "Create via @BotFather → /newbot → copy the token"},
-            {"key": "TELEGRAM_CHAT_ID",   "label": "Channel ID",
-             "help": "@yourchannelname or numeric ID — forward a message to @userinfobot to find it"},
+        ],
+        "form_fields": [
+            {"key": "TELEGRAM_CHAT_ID", "label": "Channel ID",
+             "help": "Forward a message from your channel to @getidsbot — copy the numeric ID (starts with -100)"},
         ],
         "steps": [
             ("Open Telegram, message", "@BotFather"),
             ("Send /newbot, follow the steps, copy the token", ""),
             ("Add the bot as admin to your channel (Post Messages permission)", ""),
-            ("Get channel ID: forward a channel message to", "@userinfobot"),
+            ("Get channel ID: forward a channel message to", "@getidsbot"),
         ],
         "auth_script": None,
         "verify_cmd": "telegram",
@@ -287,24 +291,24 @@ SETUP_PLATFORMS = [
             ("Add redirect URI:", "http://localhost:8080/callback"),
             ("Enter credentials below, then click Launch Auth", ""),
         ],
-        "auth_script": "bin/auth/youtube.py",
+        "auth_script": None,
         "verify_cmd": "youtube",
     },
     {
         "id": "x", "name": "X (Twitter)", "icon": "bi-twitter-x", "color": "#000000",
-        "note": "Currently requires paid API credits — disabled by default",
-        "type": "manual",
-        "keys_required": ["X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"],
-        "form_fields": [
-            {"key": "X_CONSUMER_KEY",        "label": "Consumer Key"},
-            {"key": "X_CONSUMER_SECRET",     "label": "Consumer Secret",      "type": "password"},
-            {"key": "X_ACCESS_TOKEN",        "label": "Access Token"},
-            {"key": "X_ACCESS_TOKEN_SECRET", "label": "Access Token Secret",  "type": "password"},
+        "note": "Requires X Developer account — enter Consumer Key/Secret, then authorize",
+        "type": "oauth",
+        "keys_required": ["X_ACCESS_TOKEN"],
+        "prereq_fields": [
+            {"key": "X_CONSUMER_KEY",    "label": "Consumer Key (API Key)"},
+            {"key": "X_CONSUMER_SECRET", "label": "Consumer Secret (API Key Secret)", "type": "password"},
         ],
         "steps": [
-            ("Go to", "https://developer.twitter.com → your app → Settings"),
-            ("Set permissions to Read and Write, regenerate Access Token", ""),
-            ("Add API credits to your developer account to enable posting", ""),
+            ("Go to", "https://developer.twitter.com → Projects & Apps → your app"),
+            ("Under User authentication settings set permissions to Read and Write", ""),
+            ("Set callback URL to", "https://app.socialline.space/callback"),
+            ("Copy Consumer Key and Secret from Keys and Tokens", ""),
+            ("Enter them below, then click Authorize with X", ""),
         ],
         "auth_script": None,
         "verify_cmd": "x",
@@ -314,6 +318,7 @@ SETUP_PLATFORMS = [
 _oauth_processes      = {}  # platform_id → subprocess
 _oauth_account_counts = {}  # platform_id → account count at time OAuth was launched
 _oauth_env_had_tokens = {}  # platform_id → bool: did .env already have tokens when OAuth launched
+_web_oauth            = {}  # platform_id → {state, done, code, error} for Flask-native flows
 
 
 def _platform_status_env_only(p):
@@ -694,7 +699,8 @@ def api_generate_captions():
         if is_article:
             captions = generate_article_captions(core_caption, article_meta)
         else:
-            captions = generate_platform_captions(core_caption)
+            image_path = (QUEUE_DIR / filename) if filename else None
+            captions = generate_platform_captions(core_caption, image_path=image_path)
         return jsonify(captions)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -819,7 +825,8 @@ def accounts_platform(platform_id):
     for field in p.get("form_fields", []) + p.get("prereq_fields", []):
         val = os.getenv(field["key"], "")
         current_values[field["key"]] = val
-    return render_template("setup_platform.html", p=p, configured=configured, current_values=current_values)
+    is_admin = session.get("role") == "admin"
+    return render_template("setup_platform.html", p=p, configured=configured, current_values=current_values, is_admin=is_admin)
 
 
 @app.route("/api/accounts/save-keys", methods=["POST"])
@@ -846,9 +853,188 @@ def api_setup_save_keys():
     return jsonify({"ok": True, "configured": configured})
 
 
+@app.route("/callback")
+def oauth_web_callback():
+    """Flask-native OAuth callback — handles OAuth 1.0a (X) and OAuth 2.0 (Threads etc.)."""
+    oauth_token    = request.args.get("oauth_token")
+    oauth_verifier = request.args.get("oauth_verifier")
+    state          = request.args.get("state", "")
+    code           = request.args.get("code")
+    error          = request.args.get("error")
+
+    if oauth_token and oauth_verifier:
+        # OAuth 1.0a callback (X/Twitter)
+        data = _web_oauth.get("x", {})
+        data["done"] = True
+        _web_oauth["x"] = data
+        try:
+            _x_exchange_and_save(oauth_token, oauth_verifier)
+        except Exception as e:
+            _web_oauth["x"]["exchange_error"] = str(e)
+    else:
+        # OAuth 2.0 callback (Threads, etc.)
+        matched = next((pid for pid, d in _web_oauth.items() if d.get("state") == state), None)
+        if matched:
+            _web_oauth[matched]["code"]  = code
+            _web_oauth[matched]["error"] = error
+            _web_oauth[matched]["done"]  = True
+            if code and matched == "threads":
+                try:
+                    _threads_exchange_and_save(code)
+                except Exception as e:
+                    _web_oauth[matched]["exchange_error"] = str(e)
+            elif code and matched == "youtube":
+                try:
+                    _youtube_exchange_and_save(code)
+                except Exception as e:
+                    _web_oauth[matched]["exchange_error"] = str(e)
+
+    return """<!doctype html><html><body style='font-family:sans-serif;text-align:center;padding:4rem'>
+        <h2 style='color:#7C3AED'>&#10003; Authorized!</h2>
+        <p style='color:#555'>You can close this tab and return to Socialline.</p>
+    </body></html>"""
+
+
+def _youtube_exchange_and_save(code: str):
+    import requests as _req
+    client_id     = os.getenv("YOUTUBE_CLIENT_ID") or ""
+    client_secret = os.getenv("YOUTUBE_CLIENT_SECRET") or ""
+    redirect      = "https://app.socialline.space/callback"
+    resp = _req.post("https://oauth2.googleapis.com/token", data={
+        "code":          code,
+        "client_id":     client_id,
+        "client_secret": client_secret,
+        "redirect_uri":  redirect,
+        "grant_type":    "authorization_code",
+    }, timeout=15)
+    resp.raise_for_status()
+    tokens        = resp.json()
+    access_token  = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not refresh_token:
+        raise ValueError("No refresh token returned — revoke app access at myaccount.google.com/permissions and try again")
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text("")
+    set_key(str(ENV_FILE), "YOUTUBE_ACCESS_TOKEN",  access_token)
+    set_key(str(ENV_FILE), "YOUTUBE_REFRESH_TOKEN", refresh_token)
+    load_dotenv(ENV_FILE, override=True)
+
+
+def _x_exchange_and_save(oauth_token: str, oauth_verifier: str):
+    import tweepy as _tweepy
+    handler = (_web_oauth.get("x") or {}).get("handler")
+    if not handler:
+        consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
+        consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""
+        handler = _tweepy.OAuth1UserHandler(consumer_key, consumer_secret)
+    handler.request_token = {"oauth_token": oauth_token, "oauth_token_secret": ""}
+    access_token, access_token_secret = handler.get_access_token(oauth_verifier)
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text("")
+    set_key(str(ENV_FILE), "X_ACCESS_TOKEN",        access_token)
+    set_key(str(ENV_FILE), "X_ACCESS_TOKEN_SECRET", access_token_secret)
+    load_dotenv(ENV_FILE, override=True)
+
+
+def _threads_exchange_and_save(code: str):
+    import requests as _req
+    app_id     = os.getenv("THREADS_APP_ID") or ""
+    app_secret = os.getenv("THREADS_APP_SECRET") or ""
+    redirect   = "https://app.socialline.space/callback"
+    # Short-lived token
+    resp = _req.post("https://graph.threads.net/oauth/access_token", data={
+        "client_id": app_id, "client_secret": app_secret,
+        "grant_type": "authorization_code",
+        "redirect_uri": redirect, "code": code,
+    }, timeout=15)
+    resp.raise_for_status()
+    data       = resp.json()
+    short_tok  = data["access_token"]
+    user_id    = str(data["user_id"])
+    # Long-lived token
+    resp2 = _req.get("https://graph.threads.net/v1.0/access_token", params={
+        "grant_type": "th_exchange_token",
+        "client_secret": app_secret,
+        "access_token": short_tok,
+    }, timeout=15)
+    resp2.raise_for_status()
+    long_tok = resp2.json()["access_token"]
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text("")
+    set_key(str(ENV_FILE), "THREADS_USER_ID",      user_id)
+    set_key(str(ENV_FILE), "THREADS_ACCESS_TOKEN",  long_tok)
+    load_dotenv(ENV_FILE, override=True)
+
+
 @app.route("/api/accounts/launch-oauth/<platform_id>", methods=["POST"])
 @login_required
 def api_setup_launch_oauth(platform_id):
+    # Flask-native flow for platforms that use app.socialline.space/callback
+    if platform_id == "youtube":
+        import secrets as _sec
+        client_id     = os.getenv("YOUTUBE_CLIENT_ID") or ""
+        client_secret = os.getenv("YOUTUBE_CLIENT_SECRET") or ""
+        if not client_id or not client_secret:
+            return jsonify({"error": "Enter and save Client ID and Client Secret first"}), 400
+        state    = _sec.token_urlsafe(16)
+        redirect = "https://app.socialline.space/callback"
+        scopes   = " ".join([
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ])
+        params   = urlencode({
+            "client_id":     client_id,
+            "redirect_uri":  redirect,
+            "response_type": "code",
+            "scope":         scopes,
+            "state":         state,
+            "access_type":   "offline",
+            "prompt":        "consent",
+        })
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+        _web_oauth["youtube"] = {"state": state, "done": False}
+        _oauth_account_counts["youtube"] = len(_get_acct_store().list_all("youtube"))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Authorize in the browser window, then click below."})
+
+    if platform_id == "x":
+        import tweepy as _tweepy
+        consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
+        consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""
+        if not consumer_key or not consumer_secret:
+            return jsonify({"error": "Enter and save Consumer Key and Consumer Secret first"}), 400
+        try:
+            handler  = _tweepy.OAuth1UserHandler(
+                consumer_key, consumer_secret,
+                callback="https://app.socialline.space/callback",
+            )
+            auth_url = handler.get_authorization_url()
+            _web_oauth["x"] = {"handler": handler, "done": False}
+            _oauth_account_counts["x"] = len(_get_acct_store().list_all("x"))
+            return jsonify({"ok": True, "auth_url": auth_url,
+                "message": "Authorize in the browser window, then click below."})
+        except Exception as e:
+            return jsonify({"error": f"Failed to start X auth: {e}"}), 500
+
+    if platform_id == "threads":
+        import secrets as _sec
+        p = next((x for x in SETUP_PLATFORMS if x["id"] == platform_id), None)
+        app_id = os.getenv("THREADS_APP_ID") or ""
+        if not app_id:
+            return jsonify({"error": "THREADS_APP_ID not set — enter it in the form fields first"}), 400
+        state    = _sec.token_urlsafe(16)
+        redirect = "https://app.socialline.space/callback"
+        params   = urlencode({
+            "client_id": app_id, "redirect_uri": redirect,
+            "scope": "threads_basic,threads_content_publish",
+            "response_type": "code", "state": state,
+        })
+        auth_url = f"https://threads.net/oauth/authorize?{params}"
+        _web_oauth[platform_id] = {"state": state, "done": False}
+        _oauth_account_counts[platform_id] = len(_get_acct_store().list_all(platform_id))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Authorize in the browser window, then click below."})
+
     p = next((x for x in SETUP_PLATFORMS if x["id"] == platform_id), None)
     if not p or not p.get("auth_script"):
         return jsonify({"error": "No auth script for this platform"}), 400
@@ -879,7 +1065,7 @@ def api_setup_launch_oauth(platform_id):
                 pass  # drain so it doesn't block
 
         threading.Thread(target=_stream, daemon=True).start()
-        return jsonify({"ok": True, "pid": proc.pid, "message": f"Auth flow started in terminal. Check your browser for the OAuth window."})
+        return jsonify({"ok": True, "pid": proc.pid, "message": "Auth flow started. Check your browser for the OAuth window."})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -892,6 +1078,17 @@ def api_setup_status(platform_id):
         return jsonify({"error": "Unknown platform"}), 404
     proc    = _oauth_processes.get(platform_id)
     running = proc is not None and proc.poll() is None
+
+    # Web OAuth flow (Flask-native, e.g. Threads via app.socialline.space/callback)
+    web = _web_oauth.get(platform_id)
+    if web and web.get("done"):
+        web_configured = _platform_status_env_only(p)
+        exchange_error = web.get("exchange_error")
+        return jsonify({
+            "configured": web_configured,
+            "oauth_running": False,
+            "exchange_error": exchange_error,
+        })
 
     baseline_count = _oauth_account_counts.get(platform_id)
     if baseline_count is None:
@@ -919,32 +1116,51 @@ def api_setup_verify(platform_id):
 
     try:
         if platform_id == "instagram" and not body_creds.get("INSTAGRAM_ACCOUNT_ID"):
-            # Derive Instagram from existing Facebook credentials
             import requests as _req
+
+            # --- Path 1: direct Instagram OAuth already saved tokens to env ---
+            env_ig_id    = os.environ.get("INSTAGRAM_ACCOUNT_ID")
+            env_ig_token = os.environ.get("INSTAGRAM_ACCESS_TOKEN")
+            if env_ig_id and env_ig_token:
+                ig_resp = _req.get(
+                    f"https://graph.instagram.com/v21.0/{env_ig_id}",
+                    params={"fields": "id,username", "access_token": env_ig_token},
+                    timeout=10,
+                )
+                username = ig_resp.json().get("username", "") if ig_resp.ok else ""
+                acct = _get_acct_store()
+                creds = {"INSTAGRAM_ACCOUNT_ID": env_ig_id, "INSTAGRAM_ACCESS_TOKEN": env_ig_token}
+                account = acct.add("instagram", f"@{username}" if username else env_ig_id, env_ig_id, creds)
+                return jsonify({"ok": True,
+                    "message": f"Instagram connected{' as @' + username if username else ''}",
+                    "account": account.public_dict()})
+
+            # --- Path 2: derive from Facebook Page credentials ---
             fb_acct = _get_acct_store().get_active("facebook")
             if not fb_acct or not fb_acct.credentials:
-                return jsonify({"ok": False, "message": "Connect Facebook first — Instagram uses the same app"})
+                return jsonify({"ok": False, "offer_direct_oauth": True,
+                    "message": "Facebook not connected. You can connect Instagram directly instead."})
             fb_creds   = fb_acct.credentials
             page_id    = fb_creds.get("FACEBOOK_PAGE_ID")
             page_token = fb_creds.get("FACEBOOK_PAGE_ACCESS_TOKEN")
             if not page_id or not page_token:
-                return jsonify({"ok": False, "message": "Facebook Page credentials missing — reconnect Facebook"})
+                return jsonify({"ok": False, "offer_direct_oauth": True,
+                    "message": "Facebook Page credentials missing. You can connect Instagram directly instead."})
             resp = _req.get(
                 f"https://graph.facebook.com/v19.0/{page_id}",
-                params={"fields": "instagram_business_account", "access_token": page_token},
+                params={"fields": "instagram_business_account,connected_instagram_account", "access_token": page_token},
                 timeout=10,
             )
             if not resp.ok:
-                return jsonify({"ok": False, "message": f"Facebook API error: {resp.text}"})
+                return jsonify({"ok": False, "offer_direct_oauth": True,
+                    "message": f"Facebook API error — you can connect Instagram directly instead."})
             page_data = resp.json()
-            print(f"[instagram] page API response: {page_data}")
-            ig_data = page_data.get("instagram_business_account")
+            ig_data  = page_data.get("instagram_business_account")
             if not ig_data:
-                return jsonify({"ok": False,
-                    "message": "No Instagram Business account linked to this Facebook Page. "
-                               "In Facebook Page settings → Linked Accounts → connect your Instagram."})
+                return jsonify({"ok": False, "offer_direct_oauth": True,
+                    "message": "Instagram account not detected via Facebook. "
+                               "Click below to log in with Instagram directly."})
             ig_id = ig_data["id"]
-            # Verify the IG account is accessible
             ig_resp = _req.get(
                 f"https://graph.instagram.com/v21.0/{ig_id}",
                 params={"fields": "id,username", "access_token": page_token},
@@ -1289,7 +1505,7 @@ def api_schedule_delete(post_id):
 _DEFAULT_SCHED_FILE = DATA_DIR / "default_schedule.json"
 _DEFAULT_SCHED = {
     "enabled": False,
-    "days_of_week": [0, 1, 2, 3, 4],   # 0=Mon … 6=Sun
+    "days_of_week": [0, 1, 2, 3, 4, 5, 6],   # 0=Mon … 6=Sun
     "times": ["09:00", "18:00"],
     "days_ahead": 7,
     "platforms": [],
@@ -1340,8 +1556,12 @@ def api_schedule_generate():
     days_of_week = cfg.get("days_of_week", [])
     platforms   = cfg.get("platforms", [])
 
-    if not times or not platforms:
-        return jsonify({"error": "Configure times and platforms first"}), 400
+    if not times and not platforms:
+        return jsonify({"error": "Add at least one time and select at least one platform in Default Schedule"}), 400
+    if not times:
+        return jsonify({"error": "Add at least one posting time in Default Schedule"}), 400
+    if not platforms:
+        return jsonify({"error": "Select at least one platform in Default Schedule"}), 400
 
     # Collect already-scheduled filenames so we don't double-schedule
     existing = {p["filename"] for p in _sched_store.list_all(status="pending")}
@@ -1402,5 +1622,6 @@ if __name__ == "__main__":
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     (ROOT / "famjammemes").mkdir(parents=True, exist_ok=True)
     start_scheduler(_sched_store, QUEUE_DIR)
+    start_source_puller(_source_store, _pull_engine, _sched_store, QUEUE_DIR, _load_default_sched)
     threading.Timer(1.0, lambda: webbrowser.open("https://socialline.space")).start()
     app.run(debug=False, port=5000)

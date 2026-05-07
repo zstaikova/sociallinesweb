@@ -7,3 +7,5 @@ flask>=3.0
 anthropic>=0.97
 beautifulsoup4>=4.12
 atproto>=0.0.50
+cryptography>=42.0
+keyring>=25.0

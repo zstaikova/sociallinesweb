@@ -18,9 +18,10 @@ class PinterestPublisher(BasePublisher):
     Board ID format: {username}/{board_name} or numeric ID
     """
 
-    def __init__(self):
-        self.access_token = os.environ["PINTEREST_ACCESS_TOKEN"]
-        self.board_id     = os.environ["PINTEREST_BOARD_ID"]
+    def __init__(self, credentials: dict = None):
+        _c = credentials or {}
+        self.access_token = _c.get("PINTEREST_ACCESS_TOKEN") or os.environ["PINTEREST_ACCESS_TOKEN"]
+        self.board_id     = _c.get("PINTEREST_BOARD_ID")     or os.environ["PINTEREST_BOARD_ID"]
 
     def _headers(self):
         return {
@@ -28,17 +29,19 @@ class PinterestPublisher(BasePublisher):
             "Content-Type": "application/json",
         }
 
-    def verify_auth(self) -> bool:
-        resp = requests.get(
-            f"{API}/user_account",
-            headers=self._headers(),
-            timeout=10,
-        )
+    def get_account_info(self) -> "dict | None":
+        resp = requests.get(f"{API}/user_account", headers=self._headers(), timeout=10)
         if resp.ok:
             data = resp.json()
-            print(f"Pinterest auth OK — @{data.get('username')} ({data.get('account_type')})")
+            return {"name": f"@{data.get('username', '')}", "id": data.get("id", self.board_id)}
+        return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"Pinterest auth OK — {info['name']}")
             return True
-        print(f"Pinterest auth failed: {resp.text}")
+        print("Pinterest auth failed")
         return False
 
     def publish(self, item: ContentItem) -> bool:

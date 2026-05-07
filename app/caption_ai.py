@@ -1,27 +1,104 @@
 import os
+import base64
 import json
 import requests
+from pathlib import Path
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_API_URL  = "https://api.deepseek.com/chat/completions"
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
-_api_key = None
-
-
-def _get_api_key():
-    global _api_key
-    if _api_key is None:
-        _api_key = os.environ["DEEPSEEK_API_KEY"]
-    return _api_key
+_deepseek_key  = None
+_anthropic_key = None
 
 
-def generate_platform_captions(core_caption: str) -> dict:
+def _get_deepseek_key():
+    global _deepseek_key
+    if _deepseek_key is None:
+        _deepseek_key = os.environ["DEEPSEEK_API_KEY"]
+    return _deepseek_key
+
+
+def _get_anthropic_key():
+    global _anthropic_key
+    if _anthropic_key is None:
+        _anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    return _anthropic_key
+
+
+def describe_image(image_path: Path) -> str:
+    """
+    Use Claude Haiku vision to describe what a meme image shows.
+    Returns a 1-2 sentence plain-English description, or "" on failure.
+    """
+    key = _get_anthropic_key()
+    if not key or not image_path or not image_path.exists():
+        return ""
+
+    ext = image_path.suffix.lower().lstrip(".")
+    media_type = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "png": "image/png", "gif": "image/gif", "webp": "image/webp",
+    }.get(ext, "image/jpeg")
+
+    image_data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+
+    resp = requests.post(
+        ANTHROPIC_API_URL,
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 200,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": image_data},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Describe what this meme shows in 1-2 plain sentences. "
+                            "Focus on the humor or relatable parenting/family moment. "
+                            "Don't say 'This meme shows' — just describe it directly. "
+                            "Keep it under 60 words."
+                        ),
+                    },
+                ],
+            }],
+        },
+        timeout=20,
+    )
+    if not resp.ok:
+        return ""
+    return resp.json()["content"][0]["text"].strip()
+
+
+def generate_platform_captions(core_caption: str, image_path: Path = None) -> dict:
     """
     Takes a core caption and returns platform-specific versions.
+    If image_path is provided, uses Claude vision to describe the image first.
     Returns dict with keys: facebook, instagram, threads, x, tiktok, bluesky, linkedin, pinterest
     """
+    # Try vision description first; fall back to the text caption
+    description = ""
+    if image_path:
+        description = describe_image(image_path)
+
+    if description:
+        context = f'What the meme shows: "{description}"'
+        if core_caption:
+            context += f'\nOriginal title (for extra context, may be inaccurate): "{core_caption}"'
+    else:
+        context = f'Core caption: "{core_caption}"'
+
     prompt = f"""You are a social media content creator for @famjammemes — a family and parenting humor account.
 
-Core caption: "{core_caption}"
+{context}
 
 Generate platform-specific captions. Respond ONLY with valid JSON, no explanation.
 
@@ -49,7 +126,7 @@ Rules:
     resp = requests.post(
         DEEPSEEK_API_URL,
         headers={
-            "Authorization": f"Bearer {_get_api_key()}",
+            "Authorization": f"Bearer {_get_deepseek_key()}",
             "Content-Type": "application/json",
         },
         json={
@@ -112,7 +189,7 @@ Rules:
     resp = requests.post(
         DEEPSEEK_API_URL,
         headers={
-            "Authorization": f"Bearer {_get_api_key()}",
+            "Authorization": f"Bearer {_get_deepseek_key()}",
             "Content-Type": "application/json",
         },
         json={

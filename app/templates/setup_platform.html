@@ -1,307 +1,497 @@
 {% extends "base.html" %}
-{% block title %}{{ p.name }} Setup — FamJam{% endblock %}
+{% block title %}{{ p.name }} — FamJam{% endblock %}
 
 {% block content %}
-<nav aria-label="breadcrumb" class="mb-3">
+<nav aria-label="breadcrumb" class="mb-4">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('setup') }}">Setup</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('accounts_page') }}">Accounts</a></li>
     <li class="breadcrumb-item active">{{ p.name }}</li>
   </ol>
 </nav>
 
-<div class="row g-4">
+<div class="row g-4 justify-content-center">
+  <div class="col-12 col-lg-6 d-flex flex-column gap-4">
 
-  <!-- Left: Steps + Form -->
-  <div class="col-12 col-lg-7">
+    <!-- Platform header -->
+    <div class="d-flex align-items-center gap-3">
+      <div class="d-flex align-items-center justify-content-center rounded-circle flex-shrink-0"
+           style="width:52px;height:52px;background:{{ p.color }}20;">
+        <i class="bi {{ p.icon }}" style="color:{{ p.color }};font-size:1.5rem;"></i>
+      </div>
+      <div>
+        <h4 class="mb-0">{{ p.name }}</h4>
+        <span class="text-muted small">{{ p.note }}</span>
+      </div>
+    </div>
+
+    <!-- Connected accounts -->
     <div class="card shadow-sm">
-      <div class="card-header d-flex align-items-center gap-2 py-3"
-           style="background:{{ p.color }}18; border-bottom: 2px solid {{ p.color }}40;">
-        <div class="d-flex align-items-center justify-content-center rounded-circle"
-             style="width:36px;height:36px;background:{{ p.color }}20;">
-          <i class="bi {{ p.icon }}" style="color:{{ p.color }};font-size:1.1rem;"></i>
-        </div>
-        <div>
-          <h5 class="mb-0">{{ p.name }}</h5>
-          <small class="text-muted">{{ p.note }}</small>
-        </div>
-        <div class="ms-auto">
-          {% if configured %}
-          <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>
-          {% else %}
-          <span class="badge bg-secondary">Not configured</span>
-          {% endif %}
+      <div class="card-header d-flex align-items-center justify-content-between py-3">
+        <h6 class="mb-0"><i class="bi bi-people me-2"></i>Connected Accounts</h6>
+        <span id="accountCount" class="badge bg-secondary">0</span>
+      </div>
+      <div class="card-body p-0" id="accountsList">
+        <div class="text-center text-muted py-4 small d-none" id="noAccounts">
+          <i class="bi bi-person-x" style="font-size:2rem;opacity:.3;"></i>
+          <div class="mt-2">No accounts connected</div>
         </div>
       </div>
+    </div>
 
+    <!-- Connect / Add account -->
+    <div class="card shadow-sm">
+      <div class="card-header py-3">
+        <h6 class="mb-0" id="addCardTitle"><i class="bi bi-plus-circle me-2"></i>Add Account</h6>
+      </div>
       <div class="card-body p-4">
 
-        <!-- Setup steps -->
-        <h6 class="text-uppercase text-muted small fw-semibold mb-3 letter-spacing-1">
-          <i class="bi bi-list-ol me-1"></i>Setup Steps
-        </h6>
-        <ol class="setup-steps mb-4">
-          {% for step in p.steps %}
-          <li class="mb-2">
-            {% if step[1] %}
-              {{ step[0] }} <a href="{{ step[1] }}" target="_blank" class="text-decoration-none" style="color:{{ p.color }}">{{ step[1] }}<i class="bi bi-box-arrow-up-right ms-1 small"></i></a>
-            {% else %}
-              {{ step[0] }}
-            {% endif %}
-          </li>
-          {% endfor %}
-        </ol>
+        {% if p.type == "derived" %}
+        <p class="text-muted small mb-3">
+          Instagram uses your existing <strong>Facebook</strong> app credentials.
+          Make sure Facebook is connected first and your Instagram Business account
+          is linked to your Facebook Page.
+        </p>
+        <button class="btn btn-lg w-100 fw-semibold text-white" id="connectBtn"
+                style="background:#e1306c;border:none;"
+                onclick="detectDerived()">
+          <i class="bi bi-search me-2"></i>Detect Instagram Account
+        </button>
 
-        <hr class="my-3">
-
-        {% if p.type == "manual" %}
-        <!-- Manual key entry form -->
-        <h6 class="text-uppercase text-muted small fw-semibold mb-3">
-          <i class="bi bi-key me-1"></i>Enter Credentials
-        </h6>
-        <form id="keysForm">
-          {% for field in p.form_fields %}
-          <div class="mb-3">
-            <label class="form-label fw-medium">
-              {{ field.label }}
-              {% if field.get('help') %}
-              <span class="text-muted fw-normal small ms-1">— {{ field.help }}</span>
-              {% endif %}
-            </label>
-            <input
-              type="{{ field.get('type', 'text') }}"
-              class="form-control font-monospace"
-              id="field_{{ field.key }}"
-              data-key="{{ field.key }}"
-              placeholder="{{ field.get('placeholder', '') }}"
-              value="{{ current_values.get(field.key, '') if field.get('type') != 'password' else '' }}"
-              autocomplete="off"
-            >
-          </div>
-          {% endfor %}
-          <button type="submit" class="btn btn-primary w-100" id="saveBtn">
-            <i class="bi bi-floppy me-1"></i>Save Credentials
+        <!-- Direct Instagram OAuth fallback (shown only when auto-detect fails) -->
+        <div id="directOauthSection" class="mt-3 d-none">
+          <hr class="my-3">
+          <p class="text-muted small mb-2">
+            <i class="bi bi-info-circle me-1"></i>
+            Log in directly with your Instagram account instead — no Facebook linking required.
+          </p>
+          <button class="btn btn-lg w-100 fw-semibold text-white" id="directOauthBtn"
+                  style="background:linear-gradient(135deg,#833ab4,#fd1d1d,#fcb045);border:none;"
+                  onclick="launchDirectOAuth()">
+            <i class="bi bi-instagram me-2"></i>Login with Instagram directly
           </button>
-        </form>
+          <div id="directOauthStatus" class="mt-2 d-none">
+            <div class="alert alert-info py-2 small mb-0">
+              <i class="bi bi-hourglass-split me-1"></i>
+              <span id="directOauthStatusText">Authorize in the browser window, then click below.</span>
+            </div>
+          </div>
+          <button class="btn btn-success w-100 mt-2 d-none" id="directSaveBtn"
+                  onclick="saveDirectOAuth()">
+            <i class="bi bi-check-circle me-1"></i>I authorized — save my account
+          </button>
+        </div>
+
+        <div id="derivedResult" class="mt-3 d-none">
+          <div id="derivedAlert" class="alert py-2 small mb-2"></div>
+          <a href="{{ url_for('accounts_page') }}" class="btn btn-outline-secondary w-100 d-none" id="backToAccountsBtnDerived">
+            <i class="bi bi-arrow-left me-1"></i>Back to Accounts
+          </a>
+        </div>
 
         {% elif p.type == "oauth" %}
-        <!-- OAuth flow: prereq fields + launch button -->
-        <h6 class="text-uppercase text-muted small fw-semibold mb-3">
-          <i class="bi bi-key me-1"></i>App Credentials
-        </h6>
-        <form id="keysForm">
-          {% for field in p.prereq_fields %}
+
+        {% if p.prereq_fields and is_admin %}
+        <div class="mb-4" id="prereqSection">
+          <p class="text-muted small mb-2">Step 1 — enter your app credentials:</p>
+          <form id="prereqForm">
+            {% for field in p.prereq_fields %}
+            <div class="mb-3">
+              <label class="form-label fw-medium small">{{ field.label }}</label>
+              {% if field.get('help') %}<div class="text-muted small mb-1">{{ field.help }}</div>{% endif %}
+              <input
+                type="{{ field.get('type', 'text') }}"
+                class="form-control form-control-sm"
+                data-key="{{ field.key }}"
+                value="{{ current_values.get(field.key, '') }}"
+                autocomplete="off"
+              >
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-outline-secondary btn-sm w-100">
+              <i class="bi bi-floppy me-1"></i>Save App Credentials
+            </button>
+            <div id="prereqResult" class="mt-2 d-none">
+              <div id="prereqAlert" class="alert py-2 small mb-0"></div>
+            </div>
+          </form>
+          <hr class="my-3">
+          <p class="text-muted small mb-2">Step 2 — authorize your account:</p>
+        </div>
+        {% endif %}
+
+        {% if p.id == 'tiktok' %}
+        <!-- TikTok OAuth flow guide -->
+        <div class="rounded-3 mb-3 p-3" style="background:#f8f9fa;border:1px solid #e9ecef;">
+          <div class="small fw-semibold mb-2" style="color:#010101;">
+            <i class="bi bi-info-circle me-1"></i>How Login with TikTok works
+          </div>
+          <div class="d-flex flex-column gap-2">
+            <div class="d-flex align-items-center gap-2 small text-muted">
+              <span class="badge rounded-pill text-white fw-bold" style="background:#010101;min-width:20px;font-size:.65rem;">1</span>
+              Click <strong>Login with TikTok</strong> below
+            </div>
+            <div class="d-flex align-items-center gap-2 small text-muted">
+              <span class="badge rounded-pill text-white fw-bold" style="background:#010101;min-width:20px;font-size:.65rem;">2</span>
+              TikTok's authorization screen opens in your browser — approve access
+            </div>
+            <div class="d-flex align-items-center gap-2 small text-muted">
+              <span class="badge rounded-pill text-white fw-bold" style="background:#010101;min-width:20px;font-size:.65rem;">3</span>
+              You're returned here automatically — account is saved
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-lg w-100 fw-bold text-white" id="connectBtn"
+                style="background:#010101;border:none;letter-spacing:.01em;">
+          <i class="bi bi-tiktok me-2"></i>Login with TikTok
+        </button>
+        {% else %}
+        <button class="btn btn-lg w-100 text-white fw-semibold" id="connectBtn"
+                style="background:{{ p.color }};">
+          <i class="bi bi-box-arrow-in-right me-2"></i>Connect {{ p.name }} Account
+        </button>
+        {% endif %}
+
+        <div id="oauthStatus" class="mt-3 d-none">
+          <div class="alert alert-info py-2 small mb-0">
+            <i class="bi bi-hourglass-split me-1"></i>
+            <span id="oauthStatusText">Opening browser — authorize the app, then click below.</span>
+          </div>
+        </div>
+        <button class="btn btn-success w-100 mt-2 d-none" id="saveAccountBtn">
+          <i class="bi bi-check-circle me-1"></i>I authorized — save my account
+        </button>
+        <a href="{{ url_for('accounts_page') }}" class="btn btn-outline-secondary w-100 mt-2 d-none" id="backToAccountsBtn">
+          <i class="bi bi-arrow-left me-1"></i>Back to Accounts
+        </a>
+
+        {% elif p.type == "manual" %}
+        {% if p.prereq_fields and is_admin %}
+        <div class="mb-4">
+          <p class="text-muted small mb-2">App credentials (admin only):</p>
+          <form id="prereqForm">
+            {% for field in p.prereq_fields %}
+            <div class="mb-3">
+              <label class="form-label fw-medium small">{{ field.label }}</label>
+              {% if field.get('help') %}<div class="text-muted small mb-1">{{ field.help }}</div>{% endif %}
+              <input
+                type="{{ field.get('type', 'text') }}"
+                class="form-control form-control-sm"
+                data-key="{{ field.key }}"
+                value="{{ current_values.get(field.key, '') }}"
+                autocomplete="off"
+              >
+            </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-outline-secondary btn-sm w-100">
+              <i class="bi bi-floppy me-1"></i>Save App Credentials
+            </button>
+            <div id="prereqResult" class="mt-2 d-none">
+              <div id="prereqAlert" class="alert py-2 small mb-0"></div>
+            </div>
+          </form>
+          <hr class="my-3">
+        </div>
+        {% endif %}
+        <form id="manualForm">
+          {% for field in p.form_fields %}
           <div class="mb-3">
-            <label class="form-label fw-medium">
-              {{ field.label }}
-              {% if field.get('help') %}
-              <span class="text-muted fw-normal small ms-1">— {{ field.help }}</span>
-              {% endif %}
-            </label>
+            <label class="form-label fw-medium">{{ field.label }}</label>
+            {% if field.get('help') %}<div class="text-muted small mb-1">{{ field.help }}</div>{% endif %}
             <input
               type="{{ field.get('type', 'text') }}"
-              class="form-control font-monospace"
-              id="field_{{ field.key }}"
+              class="form-control"
               data-key="{{ field.key }}"
-              value="{{ current_values.get(field.key, '') if field.get('type') != 'password' else '' }}"
+              placeholder="{{ field.get('placeholder', '') }}"
               autocomplete="off"
             >
           </div>
           {% endfor %}
-          <div class="d-flex gap-2">
-            <button type="submit" class="btn btn-outline-secondary flex-grow-1" id="saveBtn">
-              <i class="bi bi-floppy me-1"></i>Save
-            </button>
-            <button type="button" class="btn flex-grow-1 text-white" id="launchOAuthBtn"
-                    style="background:{{ p.color }};">
-              <i class="bi bi-box-arrow-up-right me-1"></i>Launch Auth
-            </button>
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Connect Account
+          </button>
+          <div id="connectResult" class="mt-3 d-none">
+            <div id="connectAlert" class="alert py-2 small mb-0"></div>
           </div>
+          <a href="{{ url_for('accounts_page') }}" class="btn btn-outline-secondary w-100 mt-2 d-none" id="backToAccountsBtnManual">
+            <i class="bi bi-arrow-left me-1"></i>Back to Accounts
+          </a>
         </form>
-
-        <div id="oauthStatus" class="mt-3 d-none">
-          <div class="alert alert-info mb-0 py-2 small">
-            <i class="bi bi-hourglass-split me-1"></i>
-            <span id="oauthStatusText">Auth flow launched — complete it in your browser/terminal, then click Verify below.</span>
-          </div>
-        </div>
         {% endif %}
 
       </div>
     </div>
-  </div>
 
-  <!-- Right: Status panel -->
-  <div class="col-12 col-lg-5">
-    <div class="card shadow-sm">
-      <div class="card-header py-3">
-        <h6 class="mb-0"><i class="bi bi-activity me-2"></i>Connection Status</h6>
-      </div>
-      <div class="card-body p-4 text-center">
-        <div id="statusIcon" class="mb-3">
-          {% if configured %}
-          <i class="bi bi-check-circle-fill text-success" style="font-size:3rem;"></i>
-          {% else %}
-          <i class="bi bi-circle text-secondary" style="font-size:3rem;"></i>
-          {% endif %}
-        </div>
-        <div id="statusText" class="fw-semibold fs-5 mb-1">
-          {% if configured %}Connected{% else %}Not connected{% endif %}
-        </div>
-        <div id="statusSub" class="text-muted small mb-4">
-          {% if configured %}
-          Credentials found in .env
-          {% else %}
-          Complete the steps on the left to connect
-          {% endif %}
-        </div>
 
-        <button class="btn btn-outline-primary w-100" id="verifyBtn">
-          <i class="bi bi-shield-check me-1"></i>Test Connection
-        </button>
-
-        <div id="verifyResult" class="mt-3 d-none">
-          <div id="verifyAlert" class="alert py-2 small mb-0"></div>
-        </div>
-      </div>
-    </div>
-
-    {% if configured %}
-    <div class="card shadow-sm mt-3 border-success">
-      <div class="card-body p-3 text-center">
-        <i class="bi bi-check2-all text-success me-1"></i>
-        <span class="small text-success fw-medium">Ready to post to {{ p.name }}</span>
-      </div>
-    </div>
-    {% endif %}
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<style>
-.setup-steps li { color: var(--bs-body-color); }
-.letter-spacing-1 { letter-spacing: .05em; }
-</style>
 <script>
-const platformId = {{ p.id | tojson }};
+const platformId   = {{ p.id | tojson }};
+const platformType = {{ p.type | tojson }};
+const isConfigured = {{ configured | tojson }};
 
-// Save credentials
-document.getElementById('keysForm')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById('saveBtn');
+// ── Accounts list ───────────────────────────────────────────────
+async function loadAccounts() {
+  const res  = await fetch('/api/accounts/' + platformId);
+  const list = await res.json();
+
+  const container  = document.getElementById('accountsList');
+  const noMsg      = document.getElementById('noAccounts');
+  const countBadge = document.getElementById('accountCount');
+  const cardTitle  = document.getElementById('addCardTitle');
+
+  countBadge.textContent = list.length;
+  countBadge.className   = list.length ? 'badge bg-success' : 'badge bg-secondary';
+  container.querySelectorAll('.account-row').forEach(el => el.remove());
+
+  // Update "Add Account" vs "Add Another Account"
+  if (cardTitle) {
+    cardTitle.innerHTML = list.length
+      ? '<i class="bi bi-plus-circle me-2"></i>Add Another Account'
+      : '<i class="bi bi-plus-circle me-2"></i>Add Account';
+  }
+
+  if (!list.length) {
+    noMsg.classList.remove('d-none');
+    return;
+  }
+  noMsg.classList.add('d-none');
+
+  list.forEach(acct => {
+    const row = document.createElement('div');
+    row.className = 'account-row d-flex align-items-center gap-3 px-4 py-3 border-bottom';
+    row.innerHTML = `
+      <div class="flex-grow-1 min-w-0">
+        <div class="fw-semibold">${acct.account_name}</div>
+        ${list.length > 1
+          ? (acct.active
+            ? '<span class="badge bg-success-subtle text-success border border-success-subtle small">Active</span>'
+            : `<button class="btn btn-link btn-sm p-0 text-muted small" onclick="setActive('${acct.id}')">Set as active</button>`)
+          : ''}
+      </div>
+      <button class="btn btn-outline-danger btn-sm" onclick="logOut('${acct.id}', '${acct.account_name.replace(/'/g,"\\'")}')">
+        <i class="bi bi-box-arrow-right me-1"></i>Log Out
+      </button>`;
+    container.appendChild(row);
+  });
+}
+
+async function setActive(id) {
+  await fetch('/api/accounts/' + id + '/activate', {method: 'POST'});
+  loadAccounts();
+}
+
+async function logOut(id, name) {
+  if (!confirm(`Log out of "${name}"?`)) return;
+  await fetch('/api/accounts/' + id, {method: 'DELETE'});
+  loadAccounts();
+}
+
+
+// ── Derived platform (e.g. Instagram via Facebook) ─────────────
+async function detectDerived() {
+  const btn = document.getElementById('connectBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Detecting…';
+  const res  = await fetch('/api/accounts/verify/' + platformId, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({}),
+  });
+  const data = await res.json();
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-search me-2"></i>Detect Instagram Account';
+  const resultDiv  = document.getElementById('derivedResult');
+  const alertEl    = document.getElementById('derivedAlert');
+  resultDiv.classList.remove('d-none');
+  alertEl.className = `alert py-2 small mb-2 alert-${data.ok ? 'success' : 'warning'}`;
+  alertEl.innerHTML = `<i class="bi bi-${data.ok ? 'check-circle' : 'exclamation-triangle'} me-1"></i>${data.message || (data.ok ? 'Connected!' : 'Detection failed')}`;
+  if (data.ok) {
+    alertEl.className = 'alert py-2 small mb-2 alert-success';
+    alertEl.innerHTML = `<i class="bi bi-check-circle me-1"></i>${data.message}`;
+    document.getElementById('backToAccountsBtnDerived').classList.remove('d-none');
+    loadAccounts();
+  } else if (data.offer_direct_oauth) {
+    document.getElementById('directOauthSection').classList.remove('d-none');
+  }
+}
+
+let _directPollInterval = null;
+
+async function launchDirectOAuth() {
+  const btn = document.getElementById('directOauthBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Opening browser…';
+  const res  = await fetch('/api/accounts/launch-oauth/' + platformId, {method: 'POST'});
+  const data = await res.json();
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-instagram me-2"></i>Login with Instagram directly';
+  const statusDiv = document.getElementById('directOauthStatus');
+  statusDiv.classList.remove('d-none');
+  if (data.ok) {
+    // Poll for completion
+    if (_directPollInterval) clearInterval(_directPollInterval);
+    _directPollInterval = setInterval(async () => {
+      const sr   = await fetch('/api/accounts/status/' + platformId);
+      const sd   = await sr.json();
+      if (!sd.oauth_running) {
+        clearInterval(_directPollInterval);
+        _directPollInterval = null;
+        document.getElementById('directOauthStatusText').textContent = 'Authorization done — click below to save.';
+        document.getElementById('directSaveBtn').classList.remove('d-none');
+      }
+    }, 3000);
+    setTimeout(() => { if (_directPollInterval) clearInterval(_directPollInterval); }, 300000);
+  } else {
+    statusDiv.querySelector('.alert').className = 'alert alert-danger py-2 small mb-0';
+    document.getElementById('directOauthStatusText').textContent = data.error || 'Failed to launch';
+  }
+}
+
+async function saveDirectOAuth() {
+  const btn = document.getElementById('directSaveBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
-
-  const keys = {};
-  document.querySelectorAll('[data-key]').forEach(el => {
-    if (el.value.trim()) keys[el.dataset.key] = el.value.trim();
-  });
-
-  const res = await fetch('/api/setup/save-keys', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({platform_id: platformId, keys})
+  const res  = await fetch('/api/accounts/verify/' + platformId, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
   });
   const data = await res.json();
-
   btn.disabled = false;
-  btn.innerHTML = '<i class="bi bi-floppy me-1"></i>Save' + (document.getElementById('launchOAuthBtn') ? '' : ' Credentials');
-
+  btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>I authorized — save my account';
   if (data.ok) {
-    if (data.configured) updateStatus(true, 'Credentials saved', 'Keys found in .env');
-    else updateStatus(false, 'Saved (incomplete)', 'Some keys may still be missing');
+    document.getElementById('directOauthSection').classList.add('d-none');
+    document.getElementById('directOauthStatus').classList.add('d-none');
+    const alertEl = document.getElementById('derivedAlert');
+    alertEl.className = 'alert py-2 small mb-2 alert-success';
+    alertEl.innerHTML = `<i class="bi bi-check-circle me-1"></i>${data.message}`;
+    document.getElementById('backToAccountsBtnDerived').classList.remove('d-none');
+    loadAccounts();
   } else {
-    showToast('Error saving: ' + data.error, 'danger');
+    alert(data.message || 'Could not save — try authorizing again.');
   }
+}
+
+// ── Prereq form (app credentials) ──────────────────────────────
+document.getElementById('prereqForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const keys = {};
+  e.target.querySelectorAll('[data-key]').forEach(el => {
+    if (el.value.trim()) keys[el.dataset.key] = el.value.trim();
+  });
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+  const res  = await fetch('/api/accounts/save-keys', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({platform_id: platformId, keys}),
+  });
+  const data = await res.json();
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-floppy me-1"></i>Save App Credentials';
+  const resultDiv = document.getElementById('prereqResult');
+  const alertEl   = document.getElementById('prereqAlert');
+  resultDiv.classList.remove('d-none');
+  alertEl.className = `alert py-2 small mb-0 alert-${data.ok ? 'success' : 'danger'}`;
+  alertEl.textContent = data.ok ? 'Credentials saved.' : (data.error || 'Failed to save');
 });
 
-// Launch OAuth
-document.getElementById('launchOAuthBtn')?.addEventListener('click', async () => {
-  const btn = document.getElementById('launchOAuthBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Launching…';
+// ── OAuth connect ───────────────────────────────────────────────
+document.getElementById('connectBtn')?.addEventListener('click', async function() {
+  this.disabled = true;
+  this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Opening browser…';
 
-  // Save prereq fields first
-  const keys = {};
-  document.querySelectorAll('[data-key]').forEach(el => {
-    if (el.value.trim()) keys[el.dataset.key] = el.value.trim();
-  });
-  await fetch('/api/setup/save-keys', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({platform_id: platformId, keys})
-  });
-
-  const res = await fetch('/api/setup/launch-oauth/' + platformId, {method: 'POST'});
+  const res  = await fetch('/api/accounts/launch-oauth/' + platformId, {method: 'POST'});
   const data = await res.json();
 
-  btn.disabled = false;
-  btn.innerHTML = '<i class="bi bi-box-arrow-up-right me-1"></i>Launch Auth';
+  this.disabled = false;
+  this.innerHTML = '<i class="bi bi-box-arrow-in-right me-2"></i>Connect {{ p.name }} Account';
 
   const statusDiv = document.getElementById('oauthStatus');
-  const statusText = document.getElementById('oauthStatusText');
   statusDiv.classList.remove('d-none');
 
   if (data.ok) {
-    statusText.textContent = data.message;
-    // Poll for completion
-    pollStatus();
+    if (data.auth_url) {
+      window.open(data.auth_url, '_blank');
+    }
+    document.getElementById('oauthStatusText').textContent = platformId === 'tiktok'
+      ? "TikTok's authorization screen is open — approve access, then return here."
+      : 'Authorize in your browser, then click below.';
+    pollOAuth();
   } else {
-    statusDiv.querySelector('.alert').className = 'alert alert-danger mb-0 py-2 small';
-    statusText.textContent = 'Error: ' + data.error;
+    statusDiv.querySelector('.alert').className = 'alert alert-danger py-2 small mb-0';
+    document.getElementById('oauthStatusText').textContent = data.error || 'Failed to launch';
   }
 });
 
-// Verify connection
-document.getElementById('verifyBtn').addEventListener('click', async () => {
-  const btn = document.getElementById('verifyBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing…';
-
-  const res = await fetch('/api/setup/verify/' + platformId);
-  const data = await res.json();
-
-  btn.disabled = false;
-  btn.innerHTML = '<i class="bi bi-shield-check me-1"></i>Test Connection';
-
-  const resultDiv = document.getElementById('verifyResult');
-  const alertDiv = document.getElementById('verifyAlert');
-  resultDiv.classList.remove('d-none');
-
-  if (data.ok) {
-    alertDiv.className = 'alert alert-success py-2 small mb-0';
-    alertDiv.innerHTML = '<i class="bi bi-check-circle me-1"></i>' + (data.message || 'Connection OK');
-    updateStatus(true, 'Connected', 'Verified live connection');
-  } else {
-    alertDiv.className = 'alert alert-danger py-2 small mb-0';
-    alertDiv.innerHTML = '<i class="bi bi-x-circle me-1"></i>' + (data.message || 'Connection failed');
-  }
-});
-
-function updateStatus(ok, title, sub) {
-  document.getElementById('statusIcon').innerHTML = ok
-    ? '<i class="bi bi-check-circle-fill text-success" style="font-size:3rem;"></i>'
-    : '<i class="bi bi-x-circle-fill text-danger" style="font-size:3rem;"></i>';
-  document.getElementById('statusText').textContent = title;
-  document.getElementById('statusSub').textContent = sub;
-}
-
-function pollStatus() {
-  const interval = setInterval(async () => {
-    const res = await fetch('/api/setup/status/' + platformId);
+let _pollInterval = null;
+function pollOAuth() {
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = setInterval(async () => {
+    const res  = await fetch('/api/accounts/status/' + platformId);
     const data = await res.json();
     if (data.configured) {
-      clearInterval(interval);
-      updateStatus(true, 'Connected', 'OAuth completed — credentials saved');
-      const statusDiv = document.getElementById('oauthStatus');
-      if (statusDiv) {
-        statusDiv.querySelector('.alert').className = 'alert alert-success mb-0 py-2 small';
-        document.getElementById('oauthStatusText').textContent = 'Auth completed successfully!';
-      }
+      clearInterval(_pollInterval);
+      _pollInterval = null;
+      document.getElementById('oauthStatus').querySelector('.alert').className = 'alert alert-success py-2 small mb-0';
+      document.getElementById('oauthStatusText').textContent = 'Authorization complete!';
+      document.getElementById('saveAccountBtn').classList.remove('d-none');
     }
   }, 3000);
-  // Stop polling after 5 minutes
-  setTimeout(() => clearInterval(interval), 300000);
+  setTimeout(() => { if (_pollInterval) clearInterval(_pollInterval); }, 300000);
 }
+
+document.getElementById('saveAccountBtn')?.addEventListener('click', async function() {
+  this.disabled = true;
+  this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+  const res  = await fetch('/api/accounts/verify/' + platformId, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
+  });
+  const data = await res.json();
+  this.disabled = false;
+  this.innerHTML = '<i class="bi bi-check-circle me-1"></i>I authorized — save my account';
+  if (data.ok) {
+    this.classList.add('d-none');
+    document.getElementById('oauthStatus').classList.add('d-none');
+    document.getElementById('backToAccountsBtn')?.classList.remove('d-none');
+    loadAccounts();
+  } else {
+    alert(data.message || 'Could not save — try authorizing again.');
+  }
+});
+
+// ── Manual connect ──────────────────────────────────────────────
+document.getElementById('manualForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const credentials = {};
+  e.target.querySelectorAll('[data-key]').forEach(el => {
+    if (el.value.trim()) credentials[el.dataset.key] = el.value.trim();
+  });
+  const btn = e.target.querySelector('button[type=submit]');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Connecting…';
+
+  const res  = await fetch('/api/accounts/verify/' + platformId, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({credentials}),
+  });
+  const data = await res.json();
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-box-arrow-in-right me-1"></i>Connect Account';
+
+  const resultDiv = document.getElementById('connectResult');
+  const alertEl   = document.getElementById('connectAlert');
+  resultDiv.classList.remove('d-none');
+  alertEl.className = `alert py-2 small mb-0 alert-${data.ok ? 'success' : 'danger'}`;
+  alertEl.innerHTML = `<i class="bi bi-${data.ok ? 'check-circle' : 'x-circle'} me-1"></i>${data.message || (data.ok ? 'Connected!' : 'Failed')}`;
+  if (data.ok) {
+    e.target.reset();
+    document.getElementById('backToAccountsBtnManual')?.classList.remove('d-none');
+    loadAccounts();
+  }
+});
+
+
+loadAccounts();
 </script>
 {% endblock %}

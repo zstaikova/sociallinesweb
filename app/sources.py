@@ -143,10 +143,60 @@ class PullEngine:
     Returns list of filenames added.
     """
 
+    DEDUP_DAYS = 30  # how long before a post can be reused
+
     def __init__(self, queue_dir: Path, env_file: Path):
-        self.queue_dir = queue_dir
-        self.env_file  = env_file
+        self.queue_dir  = queue_dir
+        self.env_file   = env_file
+        self._dedup_file = queue_dir.parent / "dedup_log.json"
         queue_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Dedup helpers ─────────────────────────────────────────────────────────
+
+    def _load_dedup(self) -> dict:
+        if self._dedup_file.exists():
+            try:
+                return json.loads(self._dedup_file.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _save_dedup(self, log: dict):
+        self._dedup_file.write_text(json.dumps(log, indent=2))
+
+    def _dedup_seen(self, log: dict, key: str) -> bool:
+        """Return True if key was seen within DEDUP_DAYS."""
+        from datetime import timedelta
+        if key not in log:
+            return False
+        try:
+            pulled_at = datetime.fromisoformat(log[key])
+            return (datetime.now() - pulled_at).days < self.DEDUP_DAYS
+        except Exception:
+            return False
+
+    def _dedup_add(self, log: dict, key: str):
+        log[key] = datetime.now().isoformat(timespec="seconds")
+
+    def _dedup_clean(self, log: dict):
+        """Remove entries older than DEDUP_DAYS."""
+        cutoff = datetime.now().timestamp() - self.DEDUP_DAYS * 86400
+        return {
+            k: v for k, v in log.items()
+            if datetime.fromisoformat(v).timestamp() > cutoff
+        }
+
+    def _queue_hashes(self) -> set:
+        """MD5 hashes of all files currently in queue."""
+        import hashlib
+        hashes = set()
+        for f in self.queue_dir.iterdir():
+            if f.is_file() and not f.suffix == ".json" and not f.suffix == ".txt":
+                try:
+                    hashes.add(hashlib.md5(f.read_bytes()).hexdigest())
+                except Exception:
+                    pass
+        return hashes
 
     def pull(self, source: dict) -> list[str]:
         """Dispatch to the right puller. Returns list of filenames added."""
@@ -192,6 +242,18 @@ class PullEngine:
         else:  # top
             posts = subreddit.top(time_filter=time_filter, limit=limit * 3)
 
+        # Keyword filters
+        raw_allowlist = cfg.get("allowlist", "")
+        raw_blocklist = cfg.get("blocklist", "")
+        skip_nsfw     = cfg.get("skip_nsfw", True)
+
+        allowlist = [w.strip().lower() for w in raw_allowlist.split(",") if w.strip()] if raw_allowlist else []
+        blocklist = [w.strip().lower() for w in raw_blocklist.split(",") if w.strip()] if raw_blocklist else []
+
+        dedup_log     = self._load_dedup()
+        dedup_log     = self._dedup_clean(dedup_log)
+        queue_hashes  = self._queue_hashes()
+
         IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4"}
         added = []
         for post in posts:
@@ -199,13 +261,29 @@ class PullEngine:
                 break
             if post.score < min_score:
                 continue
+            # NSFW filter
+            if skip_nsfw and post.over_18:
+                continue
+            # Dedup — skip if pulled within DEDUP_DAYS
+            if self._dedup_seen(dedup_log, post.id):
+                continue
+            title_lower = post.title.lower()
+            # Blocklist — skip if any blocked word found in title
+            if blocklist and any(w in title_lower for w in blocklist):
+                continue
+            # Allowlist — skip if none of the allowed words found in title
+            if allowlist and not any(w in title_lower for w in allowlist):
+                continue
             url = post.url
             ext = Path(url.split("?")[0]).suffix.lower()
             if ext not in IMAGE_EXT:
                 continue
-            filename = self._download(url, post.title)
+            filename = self._download(url, post.title, queue_hashes=queue_hashes)
             if filename:
+                self._dedup_add(dedup_log, post.id)
                 added.append(filename)
+
+        self._save_dedup(dedup_log)
         return added
 
     # ── Google Custom Search ──────────────────────────────────────────────────
@@ -422,7 +500,7 @@ Return only the caption text, nothing else."""
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _download(self, url: str, title: str = "") -> str | None:
+    def _download(self, url: str, title: str = "", queue_hashes: set = None) -> str | None:
         """Download a file to queue_dir. Returns filename or None."""
         import requests, re, hashlib
         try:
@@ -437,12 +515,21 @@ Return only the caption text, nothing else."""
                                       ".webp", ".mp4", ".mov"}:
                 return None
 
+            data = b"".join(r.iter_content(65536))
+
+            # Content hash dedup — skip if identical file already in queue
+            content_hash = hashlib.md5(data).hexdigest()
+            if queue_hashes and content_hash in queue_hashes:
+                return None
+            if queue_hashes is not None:
+                queue_hashes.add(content_hash)
+
             # Build filename from title or URL hash
             if title:
                 slug = re.sub(r"[^\w\s-]", "", title.lower())
                 slug = re.sub(r"[\s-]+", "_", slug).strip("_")[:60]
             else:
-                slug = hashlib.md5(url.encode()).hexdigest()[:12]
+                slug = content_hash[:12]
 
             dest = self.queue_dir / f"{slug}{ext}"
             counter = 1
@@ -450,9 +537,7 @@ Return only the caption text, nothing else."""
                 dest = self.queue_dir / f"{slug}_{counter}{ext}"
                 counter += 1
 
-            with open(dest, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    f.write(chunk)
+            dest.write_bytes(data)
             return dest.name
         except Exception:
             return None

@@ -1,10 +1,16 @@
 # Secrets
 .env
+accounts.enc
+.accounts.key
 
 # Runtime data
 socialline.db
 socialline.db-shm
 socialline.db-wal
+data/
+
+# OS shortcuts
+Socialline.lnk
 
 # Downloaded media
 downloads/

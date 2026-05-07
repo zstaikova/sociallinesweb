@@ -17,13 +17,14 @@ class ThreadsPublisher(BasePublisher):
                  FACEBOOK_PAGE_ID, FACEBOOK_PAGE_ACCESS_TOKEN
     """
 
-    def __init__(self):
-        self.user_id       = os.environ["THREADS_USER_ID"]
-        self.access_token  = os.environ["THREADS_ACCESS_TOKEN"]
-        self.page_id       = os.environ["FACEBOOK_PAGE_ID"]
-        self.fb_page_token = os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
+    def __init__(self, credentials: dict = None):
+        _c = credentials or {}
+        self.user_id       = _c.get("THREADS_USER_ID")             or os.environ["THREADS_USER_ID"]
+        self.access_token  = _c.get("THREADS_ACCESS_TOKEN")        or os.environ["THREADS_ACCESS_TOKEN"]
+        self.page_id       = _c.get("FACEBOOK_PAGE_ID")            or os.environ["FACEBOOK_PAGE_ID"]
+        self.fb_page_token = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN")  or os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
 
-    def verify_auth(self) -> bool:
+    def get_account_info(self) -> "dict | None":
         resp = requests.get(
             f"{THREADS_GRAPH}/{self.user_id}",
             params={"fields": "id,username,name", "access_token": self.access_token},
@@ -31,9 +32,16 @@ class ThreadsPublisher(BasePublisher):
         )
         if resp.ok:
             data = resp.json()
-            print(f"Threads auth OK — @{data.get('username', data.get('name'))} ({data.get('id')})")
+            name = data.get("username") or data.get("name", "")
+            return {"name": f"@{name}", "id": str(data.get("id", ""))}
+        return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"Threads auth OK — {info['name']} ({info['id']})")
             return True
-        print(f"Threads auth failed: {resp.text}")
+        print("Threads auth failed")
         return False
 
     def publish(self, item: ContentItem) -> bool:

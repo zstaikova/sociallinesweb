@@ -3,56 +3,186 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}FamJam Posting UI{% endblock %}</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>{% block title %}Socialline{% endblock %}</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
   <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+  {% block head %}{% endblock %}
 </head>
 <body>
-  <nav class="navbar navbar-dark bg-dark px-4 py-2">
-    <a class="navbar-brand fw-bold" href="/">
-      <i class="bi bi-camera-reels me-2"></i>FamJam
+
+  <nav class="app-nav d-flex align-items-center px-4">
+    <!-- Brand -->
+    <a class="app-brand me-5" href="/queue">
+      <i class="bi bi-camera-reels"></i>
+      <span>Socialline</span>
     </a>
-    <div class="d-flex align-items-center gap-3">
-      <a class="nav-link text-secondary small" href="/">
-        <i class="bi bi-images me-1"></i>Queue
+
+    <!-- Primary nav links -->
+    <div class="d-flex align-items-center gap-1 flex-grow-1">
+      {% if session.get('role') == 'admin' %}
+      <a class="nav-pill {% if request.path.startswith('/accounts') %}active{% endif %}" href="/accounts">
+        <i class="bi bi-people"></i> Accounts
       </a>
-      <a class="nav-link text-secondary small" href="/setup">
-        <i class="bi bi-gear me-1"></i>Setup
+      <a class="nav-pill {% if request.path == '/users' %}active{% endif %}" href="/users">
+        <i class="bi bi-person-gear"></i> Users
       </a>
-      <button id="btn-restart" class="btn btn-outline-warning btn-sm py-0" onclick="restartServer()">
-        <i class="bi bi-arrow-clockwise me-1"></i>Restart
+      {% elif session.get('role') == 'user' %}
+      <a class="nav-pill {% if request.path.startswith('/accounts') %}active{% endif %}" href="/accounts">
+        <i class="bi bi-people"></i> Accounts
+      </a>
+      {% endif %}
+      <a class="nav-pill {% if request.path == '/sources' %}active{% endif %}" href="/sources">
+        <i class="bi bi-collection"></i> Sources
+      </a>
+      <a class="nav-pill {% if request.path == '/queue' or request.path.startswith('/queue/') %}active{% endif %}" href="/queue">
+        <i class="bi bi-images"></i> Queue
+      </a>
+      <a class="nav-pill {% if request.path == '/calendar' %}active{% endif %}" href="/calendar">
+        <i class="bi bi-calendar3"></i> Calendar
+      </a>
+    </div>
+
+    <!-- Right side: user + logout -->
+    <div class="d-flex align-items-center gap-2">
+      {% if session.get('user') %}
+      <span class="nav-user-badge">
+        <i class="bi bi-person-circle"></i>
+        {{ session.get('user') }}
+        {% if session.get('role') == 'reviewer' %}
+        <span class="badge-role reviewer">reviewer</span>
+        {% endif %}
+      </span>
+      {% if session.get('role') == 'admin' %}
+      <button class="btn-restart" onclick="restartServer()" title="Restart server">
+        <i class="bi bi-arrow-clockwise"></i> Restart
       </button>
+      {% endif %}
+      <a class="btn-nav-logout" href="/logout" title="Sign out">
+        <i class="bi bi-box-arrow-right"></i>
+      </a>
+      {% endif %}
     </div>
   </nav>
 
-  <div id="restart-banner" class="d-none text-center py-2 bg-warning text-dark fw-semibold small">
-    <span class="spinner-border spinner-border-sm me-2"></span>Restarting server, please wait…
+  <div id="restart-banner" class="d-none text-center py-2 fw-semibold small"
+       style="background:#fff3cd;color:#856404;border-bottom:1px solid #ffc107;">
+    <span class="spinner-border spinner-border-sm me-2"></span>Restarting — please wait…
   </div>
+
+  {% if session.get('role') == 'admin' %}
+  <div id="default-pw-banner" class="d-none text-center py-2 small"
+       style="background:#fff3cd;color:#92400e;border-bottom:1px solid #fbbf24;">
+    <i class="bi bi-shield-exclamation me-1"></i>
+    You're using the default password.
+    <a href="#" onclick="showChangePwModal()" class="fw-semibold" style="color:#92400e;">Change it now</a>
+  </div>
+  {% endif %}
 
   <script>
   async function restartServer() {
-    const btn    = document.getElementById('btn-restart');
-    const banner = document.getElementById('restart-banner');
-    btn.disabled = true;
-    banner.classList.remove('d-none');
-
+    document.getElementById('restart-banner').classList.remove('d-none');
     await fetch('/api/restart', { method: 'POST' }).catch(() => {});
-
-    // Poll until server is back up
     const poll = setInterval(async () => {
       try {
-        const r = await fetch('/');
-        if (r.ok) {
-          clearInterval(poll);
-          location.reload();
-        }
+        const r = await fetch('/queue');
+        if (r.ok) { clearInterval(poll); location.reload(); }
       } catch (_) {}
     }, 800);
   }
+
+  {% if session.get('role') == 'admin' %}
+  // Check if still on default password
+  (async () => {
+    try {
+      const r = await fetch('/api/auth/me');
+      const d = await r.json();
+      if (d.default_password) {
+        document.getElementById('default-pw-banner').classList.remove('d-none');
+      }
+    } catch (_) {}
+  })();
+  {% endif %}
+
+  function showChangePwModal() {
+    // Lazy-init modal
+    if (!document.getElementById('changePwModal')) {
+      const html = `
+      <div class="modal fade" id="changePwModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+          <div class="modal-content rounded-4">
+            <div class="modal-header border-0 pb-0">
+              <h6 class="modal-title fw-bold">Change Password</h6>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div id="changePwErr" class="d-none mb-2 small text-danger fw-semibold"></div>
+              <div class="mb-2">
+                <label class="form-label small mb-1 fw-semibold">Current Password</label>
+                <input type="password" id="cpCurrent" class="form-control form-control-sm">
+              </div>
+              <div class="mb-2">
+                <label class="form-label small mb-1 fw-semibold">New Password</label>
+                <input type="password" id="cpNew" class="form-control form-control-sm" placeholder="min 4 characters">
+              </div>
+              <div class="mb-3">
+                <label class="form-label small mb-1 fw-semibold">Confirm New Password</label>
+                <input type="password" id="cpConfirm" class="form-control form-control-sm">
+              </div>
+            </div>
+            <div class="modal-footer border-0 pt-0">
+              <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button class="btn btn-sm btn-primary" onclick="submitChangePw()">Save Password</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+      document.body.insertAdjacentHTML('beforeend', html);
+    }
+    document.getElementById('cpCurrent').value = '';
+    document.getElementById('cpNew').value = '';
+    document.getElementById('cpConfirm').value = '';
+    document.getElementById('changePwErr').classList.add('d-none');
+    new bootstrap.Modal(document.getElementById('changePwModal')).show();
+  }
+
+  async function submitChangePw() {
+    const current = document.getElementById('cpCurrent').value;
+    const nw      = document.getElementById('cpNew').value;
+    const confirm = document.getElementById('cpConfirm').value;
+    const errEl   = document.getElementById('changePwErr');
+
+    if (nw !== confirm) {
+      errEl.textContent = 'New passwords do not match.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    if (nw.length < 4) {
+      errEl.textContent = 'Password must be at least 4 characters.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+
+    const r = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ current_password: current, new_password: nw }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('changePwModal')).hide();
+      document.getElementById('default-pw-banner')?.classList.add('d-none');
+    } else {
+      errEl.textContent = d.error || 'Failed to change password.';
+      errEl.classList.remove('d-none');
+    }
+  }
   </script>
 
-  <div class="container-fluid py-4 px-4">
+  <div class="page-body">
     {% block content %}{% endblock %}
   </div>
 

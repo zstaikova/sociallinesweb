@@ -22,7 +22,7 @@ load_dotenv(ENV_FILE)
 THREADS_AUTH  = "https://threads.net/oauth/authorize"
 THREADS_TOKEN = "https://graph.threads.net/oauth/access_token"
 THREADS_GRAPH = "https://graph.threads.net/v1.0"
-REDIRECT      = "https://famjammemes.github.io/famjammemes/"
+REDIRECT      = "https://app.socialline.space/callback"
 SCOPES        = "threads_basic,threads_content_publish"
 
 APP_ID     = os.getenv("THREADS_APP_ID") or input("Threads App ID: ").strip()

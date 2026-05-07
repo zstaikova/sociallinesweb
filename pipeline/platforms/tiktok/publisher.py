@@ -13,29 +13,105 @@ API_BASE = "https://open.tiktokapis.com/v2"
 CHUNK_SIZE = 10 * 1024 * 1024
 
 
+TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
+
+
 class TikTokPublisher(BasePublisher):
-    def __init__(self):
-        self.client_key    = os.environ["TIKTOK_CLIENT_KEY"]
-        self.client_secret = os.environ["TIKTOK_CLIENT_SECRET"]
-        self.access_token  = os.environ["TIKTOK_ACCESS_TOKEN"]
-        self.open_id       = os.environ["TIKTOK_OPEN_ID"]
+    def __init__(self, credentials: dict = None, on_token_refresh=None):
+        _c = credentials or {}
+        self.client_key    = _c.get("TIKTOK_CLIENT_KEY")    or os.environ["TIKTOK_CLIENT_KEY"]
+        self.client_secret = _c.get("TIKTOK_CLIENT_SECRET") or os.environ["TIKTOK_CLIENT_SECRET"]
+        self.access_token  = _c.get("TIKTOK_ACCESS_TOKEN")  or os.environ["TIKTOK_ACCESS_TOKEN"]
+        self.open_id       = _c.get("TIKTOK_OPEN_ID")       or os.environ["TIKTOK_OPEN_ID"]
+        self.refresh_token = _c.get("TIKTOK_REFRESH_TOKEN") or os.environ.get("TIKTOK_REFRESH_TOKEN", "")
+        self._on_token_refresh = on_token_refresh
 
     def _headers(self):
         return {"Authorization": f"Bearer {self.access_token}"}
 
-    def verify_auth(self) -> bool:
-        resp = requests.get(
-            f"{API_BASE}/user/info/",
-            params={"fields": "display_name,avatar_url"},
-            headers=self._headers(),
-            timeout=10,
-        )
+    def _is_auth_error(self, resp: requests.Response) -> bool:
+        if resp.status_code == 401:
+            return True
+        try:
+            code = resp.json().get("error", {}).get("code", "")
+            return code in ("access_token_invalid", "access_token_expired")
+        except Exception:
+            return False
+
+    def _refresh_access_token(self) -> bool:
+        """Exchange refresh token for new tokens, update self, and persist via callback."""
+        if not self.refresh_token:
+            print("  TikTok: no refresh token stored — re-authentication required")
+            return False
+        try:
+            resp = requests.post(
+                TOKEN_URL,
+                data={
+                    "client_key":     self.client_key,
+                    "client_secret":  self.client_secret,
+                    "grant_type":     "refresh_token",
+                    "refresh_token":  self.refresh_token,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=15,
+            )
+            data = resp.json()
+            if not resp.ok or "error" in data:
+                print(f"  TikTok token refresh failed: {data}")
+                return False
+            self.access_token  = data["access_token"]
+            self.refresh_token = data.get("refresh_token", self.refresh_token)
+            print("  TikTok: access token refreshed silently")
+            if self._on_token_refresh:
+                self._on_token_refresh(self.access_token, self.refresh_token)
+            return True
+        except Exception as e:
+            print(f"  TikTok token refresh exception: {e}")
+            return False
+
+    def _call(self, method: str, url: str, *, json: dict = None,
+              params: dict = None, timeout: int = 15) -> requests.Response:
+        """Unified API call with automatic silent token refresh on auth errors."""
+        def _do():
+            headers = {**self._headers(), "Content-Type": "application/json; charset=UTF-8"}
+            return getattr(requests, method)(
+                url, headers=headers, json=json, params=params, timeout=timeout
+            )
+        resp = _do()
+        if self._is_auth_error(resp) and self._refresh_access_token():
+            resp = _do()
+        return resp
+
+    def get_account_info(self) -> "dict | None":
+        resp = self._call("get", f"{API_BASE}/user/info/",
+                          params={"fields": "display_name,avatar_url"}, timeout=10)
         if resp.ok:
             user = resp.json().get("data", {}).get("user", {})
-            print(f"TikTok auth OK — account: {user.get('display_name')} ({self.open_id})")
+            return {"name": user.get("display_name", ""), "id": self.open_id}
+        return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"TikTok auth OK — account: {info['name']} ({info['id']})")
             return True
-        print(f"TikTok auth failed: {resp.text}")
+        print("TikTok auth failed")
         return False
+
+    def get_creator_info(self) -> "dict | None":
+        """Fetch creator info required before rendering the post form."""
+        resp = self._call("post", f"{API_BASE}/post/publish/creator_info/query/", json={})
+        if resp.ok:
+            return resp.json().get("data", {})
+        return None
+
+    def poll_status(self, publish_id: str) -> str:
+        """Single status check — returns status string."""
+        resp = self._call("post", f"{API_BASE}/post/publish/status/fetch/",
+                          json={"publish_id": publish_id})
+        if resp.ok:
+            return resp.json().get("data", {}).get("status", "UNKNOWN")
+        return "ERROR"
 
     def publish(self, item: ContentItem) -> bool:
         if not item.media_path or not item.media_path.exists():
@@ -44,7 +120,7 @@ class TikTokPublisher(BasePublisher):
 
         try:
             caption = self._build_caption(item)
-            publish_id = self._init_upload(item.media_path, caption)
+            publish_id = self._init_upload(item.media_path, caption, item.metadata)
             if not publish_id:
                 return False
 
@@ -63,22 +139,36 @@ class TikTokPublisher(BasePublisher):
             print(f"  TikTok publish exception: {e}")
             return False
 
-    def _init_upload(self, media_path: Path, caption: str) -> str | None:
-        file_size = media_path.stat().st_size
-        chunk_size = min(CHUNK_SIZE, file_size)
-        chunk_count = max(1, -(-file_size // chunk_size))  # ceiling division
+    def _init_upload(self, media_path: Path, caption: str, meta: dict = None) -> str | None:
+        meta = meta or {}
+        privacy_level   = meta.get("tiktok_privacy_level", "SELF_ONLY")
+        disable_comment = not meta.get("tiktok_allow_comment", False)
+        disable_duet    = not meta.get("tiktok_allow_duet",    False)
+        disable_stitch  = not meta.get("tiktok_allow_stitch",  False)
 
-        resp = requests.post(
-            f"{API_BASE}/post/publish/video/init/",
-            headers={**self._headers(), "Content-Type": "application/json; charset=UTF-8"},
+        post_info = {
+            "title":         caption,
+            "privacy_level": privacy_level,
+            "disable_duet":    disable_duet,
+            "disable_comment": disable_comment,
+            "disable_stitch":  disable_stitch,
+        }
+
+        if meta.get("tiktok_brand_organic") or meta.get("tiktok_branded_content"):
+            if meta.get("tiktok_branded_content"):
+                post_info["brand_content_toggle"]  = True
+                post_info["brand_organic_toggle"]   = bool(meta.get("tiktok_brand_organic"))
+            else:
+                post_info["brand_organic_toggle"]   = True
+
+        file_size  = media_path.stat().st_size
+        chunk_size = min(CHUNK_SIZE, file_size)
+        chunk_count = max(1, -(-file_size // chunk_size))
+
+        resp = self._call(
+            "post", f"{API_BASE}/post/publish/video/init/",
             json={
-                "post_info": {
-                    "title": caption,
-                    "privacy_level": "SELF_ONLY",  # sandbox safe — change to PUBLIC_TO_EVERYONE after approval
-                    "disable_duet": False,
-                    "disable_comment": False,
-                    "disable_stitch": False,
-                },
+                "post_info": post_info,
                 "source_info": {
                     "source": "FILE_UPLOAD",
                     "video_size": file_size,
@@ -133,12 +223,8 @@ class TikTokPublisher(BasePublisher):
 
     def _poll_status(self, publish_id: str, max_attempts: int = 20) -> str:
         for _ in range(max_attempts):
-            resp = requests.post(
-                f"{API_BASE}/post/publish/status/fetch/",
-                headers={**self._headers(), "Content-Type": "application/json; charset=UTF-8"},
-                json={"publish_id": publish_id},
-                timeout=15,
-            )
+            resp = self._call("post", f"{API_BASE}/post/publish/status/fetch/",
+                              json={"publish_id": publish_id})
             if resp.ok:
                 status = resp.json().get("data", {}).get("status", "")
                 if status in ("PUBLISH_COMPLETE", "FAILED"):

@@ -197,7 +197,8 @@ def main():
     run.add_argument("--urls", nargs="+", default=None,
                      help="Image or page URLs (--source web)")
     run.add_argument("--platforms", nargs="+", default=["facebook", "instagram", "tiktok"],
-                     choices=["facebook", "instagram", "x", "tiktok"], metavar="PLATFORM")
+                     choices=["facebook", "instagram", "x", "tiktok", "threads", "bluesky", "linkedin", "pinterest"],
+                     metavar="PLATFORM")
     run.add_argument("--subreddits", nargs="+", default=None)
     run.add_argument("--sort", default="top", choices=["hot", "top", "new", "rising"])
     run.add_argument("--time-filter", dest="time_filter", default="week",

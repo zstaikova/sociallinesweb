@@ -9,11 +9,12 @@ GRAPH_URL = "https://graph.facebook.com/v19.0"
 
 
 class FacebookPublisher(BasePublisher):
-    def __init__(self, page_id: str = None, access_token: str = None):
-        self.page_id = page_id or os.environ["FACEBOOK_PAGE_ID"]
-        self.access_token = access_token or os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
+    def __init__(self, credentials: dict = None):
+        _c = credentials or {}
+        self.page_id      = _c.get("FACEBOOK_PAGE_ID")           or os.environ["FACEBOOK_PAGE_ID"]
+        self.access_token = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
 
-    def verify_auth(self) -> bool:
+    def get_account_info(self) -> "dict | None":
         resp = requests.get(
             f"{GRAPH_URL}/{self.page_id}",
             params={"fields": "name,id", "access_token": self.access_token},
@@ -21,9 +22,15 @@ class FacebookPublisher(BasePublisher):
         )
         if resp.ok:
             data = resp.json()
-            print(f"Facebook auth OK — page: {data.get('name')} ({data.get('id')})")
+            return {"name": data.get("name", ""), "id": str(data.get("id", ""))}
+        return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"Facebook auth OK — page: {info['name']} ({info['id']})")
             return True
-        print(f"Facebook auth failed: {resp.text}")
+        print("Facebook auth failed")
         return False
 
     def publish(self, item: ContentItem) -> bool:

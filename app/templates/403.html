@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Access Denied — Socialline{% endblock %}
+{% block content %}
+<div class="d-flex flex-column align-items-center justify-content-center" style="min-height:60vh;gap:1rem;">
+  <i class="bi bi-lock-fill" style="font-size:3rem;color:#9ca3af;"></i>
+  <h5 class="mb-0 text-secondary">Access Denied</h5>
+  <p class="text-secondary small">This page requires admin access.</p>
+  <a href="/queue" class="btn btn-outline-secondary btn-sm">Go to Queue</a>
+</div>
+{% endblock %}

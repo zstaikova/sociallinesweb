@@ -78,6 +78,9 @@ class YouTubePublisher(BasePublisher):
             items = r.json().get("items", [])
             if items:
                 return {"name": items[0]["snippet"]["title"], "id": items[0]["id"]}
+            print(f"  YouTube: no channel found in response: {r.json()}")
+            return None
+        print(f"  YouTube get_account_info failed: {r.status_code} {r.text[:300]}")
         return None
 
     def verify_auth(self) -> bool:

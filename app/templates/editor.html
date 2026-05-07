@@ -366,7 +366,6 @@ document.querySelectorAll('.platform-caption').forEach(ta => {
 // ── Generate captions ───────────────────────────────────────────
 document.getElementById('btn-generate').addEventListener('click', async () => {
   const caption = document.getElementById('core-caption').value.trim();
-  if (!caption) { alert('Enter a core caption first.'); return; }
 
   document.getElementById('btn-generate').disabled = true;
   document.getElementById('gen-spinner').classList.remove('d-none');
@@ -405,11 +404,7 @@ document.getElementById('btn-post').addEventListener('click', async () => {
 
   if (!platforms.length) { alert('Select at least one platform.'); return; }
 
-  const empty = platforms.filter(p => !captions[p]);
-  if (empty.length) {
-    alert(`Missing captions for: ${empty.join(', ')}\nGenerate or write them first.`);
-    return;
-  }
+  // Empty captions are allowed — image-only posts (memes) don't need text
 
   // ── Collect platform-specific options ──
   const platform_options = {};
@@ -665,7 +660,7 @@ async function submitSchedule() {
     return;
   }
 
-  const empty = platforms.filter(p => !captions[p]);
+  const empty = [];  // Empty captions allowed for image-only posts
   if (empty.length) {
     errEl.textContent = `Missing captions for: ${empty.join(', ')}. Generate or write them first.`;
     errEl.classList.remove('d-none');

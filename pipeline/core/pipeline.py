@@ -34,6 +34,9 @@ class Pipeline:
         ]
         print(f"{len(new_items)} not yet posted to all platforms")
 
+        run_posted = 0
+        run_failed = 0
+
         for item in new_items:
             if not self.store.exists(item.id):
                 self.store.save(item)
@@ -63,9 +66,11 @@ class Pipeline:
                     post_id = platform_item.metadata.get(f"{platform.name}_post_id")
                     self.store.mark_posted(item.id, platform.name, post_id)
                     print(f"  Posted. post_id={post_id}")
+                    run_posted += 1
                 else:
                     self.store.mark_failed(item.id, platform.name)
                     print(f"  Failed.")
+                    run_failed += 1
 
-        stats = self.store.stats()
-        print(f"\nStore: {stats['total']} total | {stats['posted']} posted | {stats['failed']} failed")
+        if not dry_run:
+            print(f"\nRun: {len(new_items)} processed | {run_posted} posted | {run_failed} failed")

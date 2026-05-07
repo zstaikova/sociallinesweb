@@ -20,14 +20,15 @@ class LinkedInPublisher(BasePublisher):
     Get token via LinkedIn OAuth — scope: w_member_social
     """
 
-    def __init__(self):
-        self.access_token  = os.environ["LINKEDIN_ACCESS_TOKEN"]
-        self.person_urn    = os.environ["LINKEDIN_PERSON_URN"]
+    def __init__(self, credentials: dict = None):
+        _c = credentials or {}
+        self.access_token = _c.get("LINKEDIN_ACCESS_TOKEN") or os.environ["LINKEDIN_ACCESS_TOKEN"]
+        self.person_urn   = _c.get("LINKEDIN_PERSON_URN")   or os.environ["LINKEDIN_PERSON_URN"]
 
     def _headers(self):
         return {**HEADERS_BASE, "Authorization": f"Bearer {self.access_token}"}
 
-    def verify_auth(self) -> bool:
+    def get_account_info(self) -> "dict | None":
         resp = requests.get(
             "https://api.linkedin.com/v2/userinfo",
             headers={"Authorization": f"Bearer {self.access_token}"},
@@ -35,9 +36,15 @@ class LinkedInPublisher(BasePublisher):
         )
         if resp.ok:
             data = resp.json()
-            print(f"LinkedIn auth OK — {data.get('name', data.get('sub'))}")
+            return {"name": data.get("name", data.get("sub", "")), "id": self.person_urn}
+        return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"LinkedIn auth OK — {info['name']}")
             return True
-        print(f"LinkedIn auth failed: {resp.text}")
+        print("LinkedIn auth failed")
         return False
 
     def publish(self, item: ContentItem) -> bool:

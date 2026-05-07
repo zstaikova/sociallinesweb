@@ -1,40 +1,429 @@
 {% extends "base.html" %}
-{% block title %}Queue — FamJam{% endblock %}
+{% block title %}Queue — Socialline{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-4">
-  <h4 class="mb-0 me-3">Outgoing Queue</h4>
-  <span class="badge bg-secondary">{{ images|length }} image{{ 's' if images|length != 1 }}</span>
+
+<!-- Drop zone overlay -->
+<div id="drop-overlay" class="d-none position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center"
+     style="z-index:9999;pointer-events:none;">
+  <div class="text-center" style="color:#4361ee;">
+    <i class="bi bi-cloud-upload" style="font-size:3rem;"></i>
+    <div class="fw-semibold mt-2 fs-5">Drop to add to queue</div>
+  </div>
 </div>
 
+<!-- ── Stats + toolbar ────────────────────────────────────────── -->
+<div class="stats-bar">
+  <div class="stat-chip">
+    <i class="bi bi-images text-primary"></i>
+    <div><div class="stat-num">{{ stats.queue }}</div><div>In queue</div></div>
+  </div>
+  <div class="stat-chip">
+    <i class="bi bi-check2-circle text-success"></i>
+    <div><div class="stat-num">{{ stats.posted }}</div><div>Posted</div></div>
+  </div>
+  <div class="stat-chip">
+    <i class="bi bi-bar-chart text-secondary"></i>
+    <div><div class="stat-num">{{ stats.db_posted }}</div><div>All time</div></div>
+  </div>
+
+  <!-- View segmented control -->
+  <div class="view-seg ms-auto" id="view-seg" role="group" aria-label="View">
+    <button onclick="setView('mini')"     title="Single-line scan">≡ Mini</button>
+    <button onclick="setView('compact')"  title="Thumbnail grid" class="active">▦ Compact</button>
+    <button onclick="setView('expanded')" title="Inline editor">▥ Expanded</button>
+  </div>
+
+  <!-- Upload -->
+  <div class="d-flex align-items-center gap-2">
+    <div id="upload-status" class="d-none small"></div>
+    <label class="btn btn-primary btn-sm px-3 mb-0" style="cursor:pointer;border-radius:8px;">
+      <i class="bi bi-upload me-1"></i>Upload
+      <input type="file" id="upload-input" accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.mov" class="d-none" multiple>
+    </label>
+  </div>
+</div>
+
+<!-- ── Accounts banner (hidden once accounts are connected) ───── -->
+<div id="accounts-banner" class="d-none mb-3">
+  <div class="d-flex align-items-center gap-3 rounded-3 px-4 py-3"
+       style="background:#fff7ed;border:1px solid #fed7aa;">
+    <i class="bi bi-plug text-warning fs-5"></i>
+    <div class="flex-grow-1">
+      <div class="fw-semibold text-warning-emphasis" style="font-size:.9rem;">No accounts connected</div>
+      <div class="text-muted small">Connect your social media accounts before posting.</div>
+    </div>
+    <a href="/accounts" class="btn btn-warning btn-sm fw-semibold">
+      <i class="bi bi-gear me-1"></i>Go to Accounts
+    </a>
+  </div>
+</div>
+
+<!-- ── Outgoing Queue ──────────────────────────────────────────── -->
+<div class="section-header">
+  <span class="section-title">Ready to post</span>
+  <div class="section-divider"></div>
+</div>
+
+{% set PLATS = [
+  ("facebook",  "Facebook",  "#1877f2", "bi-facebook"),
+  ("instagram", "Instagram", "#e1306c", "bi-instagram"),
+  ("threads",   "Threads",   "#000000", "bi-threads"),
+  ("x",         "X",         "#000000", "bi-twitter-x"),
+  ("tiktok",    "TikTok",    "#010101", "bi-tiktok"),
+  ("bluesky",   "Bluesky",   "#0085ff", "bi-cloud"),
+  ("linkedin",  "LinkedIn",  "#0a66c2", "bi-linkedin"),
+  ("pinterest", "Pinterest", "#e60023", "bi-pinterest"),
+] %}
+
 {% if images %}
-  <div class="row g-3">
-    {% for img in images %}
-    <div class="col-6 col-md-4 col-lg-3 col-xl-2">
-      <div class="card image-card h-100">
-        <div class="image-thumb-wrap">
-          <img src="{{ url_for('serve_queue_image', filename=img.filename) }}"
-               class="image-thumb" alt="{{ img.caption }}">
+<div class="queue-grid mb-5" id="queue-grid" data-view="compact">
+  {% for img in images %}
+  {% set cid = "qcard-" ~ loop.index %}
+  <div class="queue-card" id="{{ cid }}" data-filename="{{ img.filename }}">
+
+    {# ── Mini row (header in all modes) ─────────────────────── #}
+    <div class="card-mini-row">
+      {% if img.filename.endswith(('.mp4', '.mov')) %}
+      <video src="{{ url_for('serve_queue_media', filename=img.filename) }}"
+             class="mini-thumb" muted preload="metadata" style="border-radius:6px;object-fit:cover;"></video>
+      {% else %}
+      <img src="{{ url_for('serve_queue_media', filename=img.filename) }}"
+           class="mini-thumb" alt="">
+      {% endif %}
+      <span class="mini-title" title="{{ img.caption }}">
+        {{ img.caption if img.caption else 'Untitled' }}
+      </span>
+      <div class="mini-platforms">
+        {% for pid, pname, color, icon in PLATS[:4] %}
+        <div class="mini-dot" style="background:{{ color }};" title="{{ pname }}"></div>
+        {% endfor %}
+      </div>
+      <button class="btn-expand-sm ms-1" onclick="toggleCardExpand('{{ cid }}')" title="Expand / collapse">
+        <i class="bi bi-chevron-expand"></i>
+      </button>
+      <button class="btn-del-sm" onclick="deleteFile('queue','{{ img.filename }}','{{ cid }}')" title="Delete">
+        <i class="bi bi-trash"></i>
+      </button>
+    </div>
+
+    {# ── Compact body ───────────────────────────────────────── #}
+    <div class="card-compact-body">
+      <a href="{{ url_for('editor', filename=img.filename) }}" class="card-thumb-link">
+        {% if img.filename.endswith(('.mp4', '.mov')) %}
+        <video src="{{ url_for('serve_queue_media', filename=img.filename) }}" muted preload="metadata"></video>
+        <span class="video-badge"><i class="bi bi-play-fill me-1"></i>VIDEO</span>
+        {% else %}
+        <img src="{{ url_for('serve_queue_media', filename=img.filename) }}" alt="">
+        {% endif %}
+        <div class="card-thumb-overlay">
+          <span class="thumb-edit-btn"><i class="bi bi-pencil me-1"></i>Edit &amp; Post</span>
         </div>
-        <div class="card-body p-2">
-          <p class="card-text small text-muted text-truncate mb-2" title="{{ img.caption }}">
-            {{ img.caption }}
-          </p>
-          <a href="{{ url_for('editor', filename=img.filename) }}"
-             class="btn btn-primary btn-sm w-100">
-            <i class="bi bi-pencil me-1"></i>Edit &amp; Post
-          </a>
+      </a>
+      <div class="card-compact-foot">
+        <div class="card-caption-snip">{{ img.caption if img.caption else 'Untitled' }}</div>
+        <div class="card-action-rows">
+          <div class="card-action-row">
+            <button class="btn-post-compact" onclick="toggleCardExpand('{{ cid }}')" title="Post to platforms">
+              <i class="bi bi-send-fill me-1"></i>Post
+            </button>
+            <button class="btn-icon-sm" onclick="moveToPosted('{{ img.filename }}', this, '{{ cid }}')" title="Move to Posted">
+              <i class="bi bi-check2"></i>
+            </button>
+          </div>
+          <div class="card-action-row">
+            <button class="btn-schedule-compact" onclick="openSchedule('{{ cid }}', '{{ img.filename }}')" title="Schedule post">
+              <i class="bi bi-calendar-event me-1"></i>Schedule
+            </button>
+            <button class="btn-icon-sm btn-icon-del" onclick="deleteFile('queue','{{ img.filename }}','{{ cid }}')" title="Delete">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
         </div>
       </div>
     </div>
-    {% endfor %}
+
+    {# ── Expanded body (inline editor) ──────────────────────── #}
+    <div class="card-expanded-body">
+      <textarea id="exp-caption-{{ cid }}" rows="3"
+                placeholder="Write a caption for all selected platforms…"
+                oninput="updateExpCharCount('{{ cid }}')">{{ img.caption }}</textarea>
+      <div class="exp-char-count" id="exp-count-{{ cid }}"></div>
+
+      <!-- Platform chips -->
+      <div class="exp-platforms" id="exp-plats-{{ cid }}">
+        {% for pid, pname, color, icon in PLATS %}
+        <div class="exp-plat-chip {% if pid in ['facebook','instagram','threads','x'] %}on{% endif %}"
+             data-platform="{{ pid }}"
+             style="--chip-color:{{ color }};"
+             onclick="toggleChip(this, '{{ cid }}')">
+          <i class="bi {{ icon }}" style="color:{{ color }};font-size:.75rem;"></i>
+          {{ pname }}
+        </div>
+        {% endfor %}
+      </div>
+
+      <!-- Actions -->
+      <div class="exp-actions">
+        <button class="btn-post-inline" id="exp-post-{{ cid }}"
+                onclick="postInline('{{ cid }}', '{{ img.filename }}')">
+          <i class="bi bi-send me-1"></i>Post now
+        </button>
+        <a href="{{ url_for('editor', filename=img.filename) }}" class="btn-full-editor">
+          <i class="bi bi-sliders me-1"></i>Full editor
+        </a>
+        <button class="exp-collapse-btn" onclick="toggleCardExpand('{{ cid }}')" title="Collapse">
+          <i class="bi bi-chevron-up"></i>
+        </button>
+      </div>
+      <div class="exp-result" id="exp-result-{{ cid }}"></div>
+    </div>
+
   </div>
+  {% endfor %}
+</div>
 
 {% else %}
-  <div class="empty-state text-center py-5">
-    <i class="bi bi-inbox display-3 text-muted"></i>
-    <p class="mt-3 text-muted">No images in queue.</p>
-    <p class="text-muted small">Drop images into <code>famjammemes/queue/</code> to get started.</p>
-  </div>
+<div class="text-center py-5 mb-4" style="color:#9ca3af;">
+  <i class="bi bi-inbox" style="font-size:3rem;opacity:.4;"></i>
+  <p class="mt-3 mb-1 fw-medium">Queue is empty</p>
+  <p class="small">Upload above or drag &amp; drop anywhere on the page.</p>
+</div>
 {% endif %}
+
+<!-- ── Posted strip ───────────────────────────────────────────── -->
+{% if posted %}
+<div class="section-header mt-2">
+  <span class="section-title">Posted</span>
+  <span class="badge bg-success-subtle text-success border border-success-subtle ms-1"
+        style="font-size:.7rem;">{{ posted|length }}</span>
+  <div class="section-divider"></div>
+</div>
+<div class="posted-strip">
+  {% for img in posted %}
+  <div class="posted-thumb" id="pthumb-{{ loop.index }}" title="{{ img.caption }}">
+    {% if img.filename.endswith(('.mp4', '.mov')) %}
+    <video src="{{ url_for('serve_posted_media', filename=img.filename) }}" muted preload="metadata"></video>
+    {% else %}
+    <img src="{{ url_for('serve_posted_media', filename=img.filename) }}" alt="">
+    {% endif %}
+    <div class="posted-age posted-time" data-mtime="{{ img.mtime }}"></div>
+    <button class="posted-del" onclick="deleteFile('posted','{{ img.filename }}','pthumb-{{ loop.index }}')"
+            title="Delete"><i class="bi bi-x"></i></button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PLATS_ALL = ['facebook','instagram','threads','x','tiktok','bluesky','linkedin','pinterest'];
+
+// Show accounts banner if no platforms have credentials
+(async () => {
+  try {
+    const res  = await fetch('/api/accounts');
+    const list = await res.json();
+    const anyConnected = list.some(a => a.active && a.has_credentials);
+    if (!anyConnected) {
+      document.getElementById('accounts-banner').classList.remove('d-none');
+    }
+  } catch (_) {}
+})();
+
+// ── Video thumbnails — seek to 0.5s to show a real frame ────────
+document.querySelectorAll('video[preload="metadata"]').forEach(v => {
+  const seek = () => { if (v.duration) v.currentTime = Math.min(0.5, v.duration * 0.1); };
+  if (v.readyState >= 1) seek();
+  else v.addEventListener('loadedmetadata', seek, { once: true });
+});
+
+// ── Relative timestamps ─────────────────────────────────────────
+document.querySelectorAll('.posted-time').forEach(el => {
+  const diff = Date.now() - parseInt(el.dataset.mtime);
+  const m = Math.floor(diff/60000), h = Math.floor(diff/3600000), d = Math.floor(diff/86400000);
+  el.textContent = d > 0 ? `${d}d` : h > 0 ? `${h}h` : m > 0 ? `${m}m` : 'now';
+});
+
+// ── Global view control ─────────────────────────────────────────
+function setView(mode) {
+  document.getElementById('queue-grid').dataset.view = mode;
+  // Reset all per-card overrides
+  document.querySelectorAll('.queue-card').forEach(c => {
+    c.classList.remove('card-force-expanded', 'card-force-mini');
+  });
+  // Update buttons
+  document.querySelectorAll('#view-seg button').forEach(b => b.classList.remove('active'));
+  const labels = { mini: 0, compact: 1, expanded: 2 };
+  document.querySelectorAll('#view-seg button')[labels[mode]].classList.add('active');
+}
+
+// ── Per-card expand toggle ──────────────────────────────────────
+function toggleCardExpand(cid) {
+  const card  = document.getElementById(cid);
+  const grid  = document.getElementById('queue-grid');
+  const view  = grid?.dataset.view || 'compact';
+
+  if (view === 'expanded') {
+    // In global expanded mode, collapse this one card to compact
+    if (card.classList.contains('card-force-mini')) {
+      card.classList.remove('card-force-mini');
+    } else {
+      card.classList.add('card-force-mini');
+    }
+    return;
+  }
+  // In compact/mini mode, force-expand this one card
+  if (card.classList.contains('card-force-expanded')) {
+    card.classList.remove('card-force-expanded');
+  } else {
+    card.classList.add('card-force-expanded');
+  }
+}
+
+// ── Platform chip toggle ────────────────────────────────────────
+function toggleChip(el) {
+  el.classList.toggle('on');
+}
+
+// ── Char counter for expanded textarea ─────────────────────────
+function updateExpCharCount(cid) {
+  const ta  = document.getElementById('exp-caption-' + cid);
+  const ctr = document.getElementById('exp-count-' + cid);
+  if (!ta || !ctr) return;
+  ctr.textContent = `${ta.value.length} chars`;
+  ctr.style.color = ta.value.length > 2200 ? '#ef4444' : '#9ca3af';
+}
+
+// ── Inline post ─────────────────────────────────────────────────
+async function postInline(cid, filename) {
+  const card     = document.getElementById(cid);
+  const caption  = document.getElementById('exp-caption-' + cid).value.trim();
+  const resultEl = document.getElementById('exp-result-' + cid);
+  const btn      = document.getElementById('exp-post-' + cid);
+
+  const platforms = [...card.querySelectorAll('.exp-plat-chip.on')]
+    .map(c => c.dataset.platform);
+
+  if (!platforms.length) { alert('Select at least one platform.'); return; }
+  if (!caption) { alert('Write a caption first.'); return; }
+
+  // Build captions dict — same caption for all selected platforms
+  const captions = {};
+  platforms.forEach(p => captions[p] = caption);
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Posting…';
+  resultEl.style.display = 'none';
+
+  try {
+    const res     = await fetch('/api/publish', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename, captions, platforms }),
+    });
+    const results = await res.json();
+
+    let posted = 0, failed = 0, lines = [];
+    Object.entries(results).forEach(([p, r]) => {
+      if (r.status === 'posted') { posted++; lines.push(`✓ ${p}`); }
+      else { failed++; lines.push(`✗ ${p}: ${r.detail || r.status}`); }
+    });
+
+    resultEl.style.display = 'block';
+    resultEl.style.background = failed ? '#fef2f2' : '#f0fdf4';
+    resultEl.style.color      = failed ? '#dc2626' : '#16a34a';
+    resultEl.style.border     = `1px solid ${failed ? '#fecaca' : '#bbf7d0'}`;
+    resultEl.innerHTML = lines.join('<br>');
+
+    if (!failed) {
+      // Auto-show move-to-posted prompt
+      resultEl.innerHTML += `<br><button onclick="moveToPosted('${filename}',this,'${cid}')"
+        style="margin-top:6px;font-size:.72rem;padding:3px 10px;border-radius:6px;border:1px solid #22c55e;background:#f0fdf4;color:#16a34a;cursor:pointer;">
+        Move to Posted →</button>`;
+    }
+  } catch (e) {
+    resultEl.style.display = 'block';
+    resultEl.style.background = '#fef2f2'; resultEl.style.color = '#dc2626';
+    resultEl.textContent = 'Error: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-send me-1"></i>Post now';
+  }
+}
+
+// ── Schedule ────────────────────────────────────────────────────
+function openSchedule(cid, filename) {
+  window.location.href = '/queue/' + encodeURIComponent(filename) + '?schedule=1';
+}
+
+// ── Move to posted ──────────────────────────────────────────────
+async function moveToPosted(filename, btn, cardId) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '…'; }
+  await fetch('/api/queue/' + encodeURIComponent(filename) + '/move-to-posted', {method: 'POST'});
+  document.getElementById(cardId)?.remove();
+}
+
+// ── Delete ──────────────────────────────────────────────────────
+async function deleteFile(bucket, filename, elId) {
+  if (!confirm(`Delete "${filename}"?`)) return;
+  await fetch(`/api/${bucket}/` + encodeURIComponent(filename), {method: 'DELETE'});
+  document.getElementById(elId)?.remove();
+}
+
+// ── Upload ──────────────────────────────────────────────────────
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const status = document.getElementById('upload-status');
+  status.classList.remove('d-none');
+  status.className = 'small text-muted';
+  status.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Uploading…';
+
+  const fd = new FormData();
+  for (const file of files) fd.append('file', file);
+
+  let done = 0, errMsg = '';
+  try {
+    const res  = await fetch('/api/queue/upload', {method: 'POST', body: fd});
+    const data = await res.json();
+    if (data.ok && data.results) {
+      done = data.results.filter(r => r.ok).length;
+      const bad = data.results.filter(r => !r.ok);
+      if (bad.length) errMsg = bad.map(r => `${r.filename}: ${r.error}`).join('; ');
+    } else { errMsg = data.error || 'Unknown error'; }
+  } catch (e) { errMsg = e.toString(); }
+
+  if (done > 0) {
+    status.style.color = '#16a34a'; status.className = 'small fw-semibold';
+    status.textContent = `${done} added — reloading…`;
+    setTimeout(() => location.reload(), 800);
+  } else {
+    status.style.color = '#dc2626'; status.className = 'small';
+    status.textContent = `Failed: ${errMsg}`;
+  }
+}
+
+document.getElementById('upload-input').addEventListener('change', e => {
+  uploadFiles([...e.target.files]); e.target.value = '';
+});
+
+// Drag & drop
+let dc = 0;
+document.addEventListener('dragenter', e => {
+  if ([...e.dataTransfer.items].some(i => i.kind === 'file')) {
+    if (!dc++) { const ov = document.getElementById('drop-overlay'); ov.classList.remove('d-none'); ov.style.pointerEvents = 'all'; }
+  }
+});
+document.addEventListener('dragleave', () => {
+  if (--dc <= 0) { dc = 0; const ov = document.getElementById('drop-overlay'); ov.classList.add('d-none'); ov.style.pointerEvents = 'none'; }
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault(); dc = 0;
+  const ov = document.getElementById('drop-overlay'); ov.classList.add('d-none'); ov.style.pointerEvents = 'none';
+  uploadFiles([...e.dataTransfer.files]);
+});
+</script>
 {% endblock %}

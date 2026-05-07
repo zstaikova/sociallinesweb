@@ -18,9 +18,10 @@ class BlueskyPublisher(BasePublisher):
     Get an app password at: https://bsky.app/settings/app-passwords
     """
 
-    def __init__(self):
-        self.handle       = os.environ["BLUESKY_HANDLE"]
-        self.app_password = os.environ["BLUESKY_APP_PASSWORD"]
+    def __init__(self, credentials: dict = None):
+        _c = credentials or {}
+        self.handle       = _c.get("BLUESKY_HANDLE")        or os.environ["BLUESKY_HANDLE"]
+        self.app_password = _c.get("BLUESKY_APP_PASSWORD")  or os.environ["BLUESKY_APP_PASSWORD"]
 
     def _client(self):
         from atproto import Client
@@ -28,15 +29,21 @@ class BlueskyPublisher(BasePublisher):
         client.login(self.handle, self.app_password)
         return client
 
-    def verify_auth(self) -> bool:
+    def get_account_info(self) -> "dict | None":
         try:
-            client = self._client()
+            client  = self._client()
             profile = client.get_profile(self.handle)
-            print(f"Bluesky auth OK — @{profile.handle} ({profile.did})")
+            return {"name": f"@{profile.handle}", "id": profile.did}
+        except Exception:
+            return None
+
+    def verify_auth(self) -> bool:
+        info = self.get_account_info()
+        if info:
+            print(f"Bluesky auth OK — {info['name']} ({info['id']})")
             return True
-        except Exception as e:
-            print(f"Bluesky auth failed: {e}")
-            return False
+        print("Bluesky auth failed")
+        return False
 
     def publish(self, item: ContentItem) -> bool:
         try:

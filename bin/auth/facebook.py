@@ -23,7 +23,7 @@ load_dotenv(ENV_FILE)
 
 GRAPH    = "https://graph.facebook.com/v19.0"
 REDIRECT = "http://localhost:8080/callback"
-SCOPES   = "pages_manage_posts,pages_read_engagement,pages_show_list,public_profile,instagram_basic,instagram_content_publish"
+SCOPES   = "pages_manage_posts,pages_read_engagement,pages_show_list,public_profile,instagram_basic,instagram_content_publish,business_management"
 
 APP_ID     = os.getenv("FACEBOOK_APP_ID") or input("App ID: ").strip()
 APP_SECRET = os.getenv("FACEBOOK_APP_SECRET") or input("App Secret: ").strip()
@@ -76,7 +76,7 @@ def exchange_long_lived(short_token):
 
 def get_pages(long_token):
     resp = requests.get(f"{GRAPH}/me/accounts", params={
-        "fields": "id,name,access_token", "access_token": long_token,
+        "fields": "id,name,access_token,instagram_business_account", "access_token": long_token,
     })
     resp.raise_for_status()
     return resp.json().get("data", [])
@@ -139,7 +139,13 @@ def main():
     set_key(str(ENV_FILE), "FACEBOOK_PAGE_ID",           chosen["id"])
     set_key(str(ENV_FILE), "FACEBOOK_PAGE_ACCESS_TOKEN", chosen["access_token"])
 
-    print(f"Saved to {ENV_FILE}")
+    ig = chosen.get("instagram_business_account")
+    if ig:
+        set_key(str(ENV_FILE), "INSTAGRAM_ACCOUNT_ID", ig["id"])
+        print(f"\nInstagram Business account detected: {ig['id']}")
+        print("INSTAGRAM_ACCOUNT_ID saved — no need to run Instagram setup separately.")
+
+    print(f"\nSaved to {ENV_FILE}")
     print("\nSetup complete. Run: python bin/cli.py auth facebook")
 
 

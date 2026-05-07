@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block title %}Users — Socialline{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <h4 class="mb-0">Users</h4>
+  <button class="btn btn-primary btn-sm" onclick="showCreateModal()">
+    <i class="bi bi-person-plus me-1"></i>Add User
+  </button>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover mb-0" id="users-table">
+      <thead style="background:#f8f9fa;">
+        <tr>
+          <th class="px-4 py-3 small fw-semibold text-muted border-0">Username</th>
+          <th class="py-3 small fw-semibold text-muted border-0">Role</th>
+          <th class="py-3 small fw-semibold text-muted border-0">Created</th>
+          <th class="py-3 border-0"></th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody">
+        <tr><td colspan="4" class="text-center text-muted py-4">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="mt-4 p-3 rounded-3 small text-muted" style="background:#f8f9fa;border:1px solid #e5e7eb;max-width:520px;">
+  <div class="fw-semibold mb-2"><i class="bi bi-info-circle me-1"></i>Role permissions</div>
+  <div class="mb-1"><span class="badge bg-danger-subtle text-danger border border-danger-subtle me-2">admin</span>Full access — users, accounts, posting, settings</div>
+  <div class="mb-1"><span class="badge bg-primary-subtle text-primary border border-primary-subtle me-2">user</span>Own platform accounts + full posting access</div>
+  <div><span class="badge bg-warning-subtle text-warning border border-warning-subtle me-2">reviewer</span>TikTok posting only — for app certification review</div>
+</div>
+
+<!-- Create user modal -->
+<div class="modal fade" id="createModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold">Add User</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="createErr" class="d-none mb-2 small text-danger fw-semibold"></div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Username</label>
+          <input type="text" id="newUsername" class="form-control form-control-sm">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Password</label>
+          <input type="password" id="newPassword" class="form-control form-control-sm" placeholder="min 4 characters">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold mb-1">Role</label>
+          <select id="newRole" class="form-select form-select-sm">
+            <option value="user" selected>user — full posting access</option>
+            <option value="reviewer">reviewer — TikTok only</option>
+            <option value="admin">admin — full access</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="createUser()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Reset password modal -->
+<div class="modal fade" id="resetPwModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold">Reset Password — <span id="resetPwUsername"></span></h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="resetPwErr" class="d-none mb-2 small text-danger fw-semibold"></div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold mb-1">New Password</label>
+          <input type="password" id="resetPwValue" class="form-control form-control-sm" placeholder="min 4 characters">
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="submitResetPw()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .role-badge-admin    { background:#fee2e2;color:#991b1b;border:1px solid #fca5a5; }
+  .role-badge-user     { background:#dbeafe;color:#1e40af;border:1px solid #93c5fd; }
+  .role-badge-reviewer { background:#fef9c3;color:#854d0e;border:1px solid #fde047; }
+  .role-badge { font-size:.7rem;padding:2px 8px;border-radius:10px;font-weight:600; }
+</style>
+<script>
+const ME = {{ session.get('user') | tojson }};
+let _resetTarget = null;
+
+const ROLE_LABELS = {
+  admin:    'admin',
+  user:     'user',
+  reviewer: 'reviewer',
+};
+
+async function loadUsers() {
+  const r = await fetch('/api/users');
+  const users = await r.json();
+  const tbody = document.getElementById('users-tbody');
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">No users yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = users.map(u => `
+    <tr>
+      <td class="px-4 py-3 fw-semibold">
+        ${escHtml(u.username)}
+        ${u.username === ME ? '<span class="badge bg-secondary ms-2" style="font-size:.65rem;">you</span>' : ''}
+      </td>
+      <td class="py-3">
+        <span class="role-badge role-badge-${u.role}">${ROLE_LABELS[u.role] || u.role}</span>
+      </td>
+      <td class="py-3 text-muted small">${fmtDate(u.created_at)}</td>
+      <td class="py-3 text-end pe-4">
+        <div class="d-flex gap-2 justify-content-end">
+          <button class="btn btn-outline-secondary btn-sm py-0" style="font-size:.75rem;"
+                  onclick="showRoleModal('${escHtml(u.username)}','${u.role}')">
+            <i class="bi bi-person-gear me-1"></i>Role
+          </button>
+          <button class="btn btn-outline-secondary btn-sm py-0" style="font-size:.75rem;"
+                  onclick="showResetPw('${escHtml(u.username)}')">
+            <i class="bi bi-key me-1"></i>Reset PW
+          </button>
+          ${u.username !== ME ? `
+          <button class="btn btn-outline-danger btn-sm py-0" style="font-size:.75rem;"
+                  onclick="deleteUser('${escHtml(u.username)}')">
+            <i class="bi bi-trash"></i>
+          </button>` : ''}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function showCreateModal() {
+  document.getElementById('newUsername').value = '';
+  document.getElementById('newPassword').value = '';
+  document.getElementById('newRole').value = 'user';
+  document.getElementById('createErr').classList.add('d-none');
+  new bootstrap.Modal(document.getElementById('createModal')).show();
+}
+
+async function createUser() {
+  const username = document.getElementById('newUsername').value.trim();
+  const password = document.getElementById('newPassword').value;
+  const role     = document.getElementById('newRole').value;
+  const errEl    = document.getElementById('createErr');
+
+  if (!username || password.length < 4) {
+    errEl.textContent = 'Username and password (min 4 chars) required.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+  const r = await fetch('/api/users', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ username, password, role }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    bootstrap.Modal.getInstance(document.getElementById('createModal')).hide();
+    loadUsers();
+  } else {
+    errEl.textContent = d.error || 'Failed to create user.';
+    errEl.classList.remove('d-none');
+  }
+}
+
+function showRoleModal(username, currentRole) {
+  // Inline prompt for simplicity
+  const role = prompt(`Change role for "${username}":\nEnter: admin, user, or reviewer`, currentRole);
+  if (!role || role === currentRole) return;
+  fetch(`/api/users/${encodeURIComponent(username)}/role`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ role }),
+  }).then(r => r.json()).then(d => {
+    if (d.ok) loadUsers();
+    else alert(d.error || 'Failed to update role.');
+  });
+}
+
+function showResetPw(username) {
+  _resetTarget = username;
+  document.getElementById('resetPwUsername').textContent = username;
+  document.getElementById('resetPwValue').value = '';
+  document.getElementById('resetPwErr').classList.add('d-none');
+  new bootstrap.Modal(document.getElementById('resetPwModal')).show();
+}
+
+async function submitResetPw() {
+  const pw    = document.getElementById('resetPwValue').value;
+  const errEl = document.getElementById('resetPwErr');
+  if (pw.length < 4) {
+    errEl.textContent = 'Password must be at least 4 characters.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+  const r = await fetch(`/api/users/${encodeURIComponent(_resetTarget)}/reset-password`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ password: pw }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    bootstrap.Modal.getInstance(document.getElementById('resetPwModal')).hide();
+  } else {
+    errEl.textContent = d.error || 'Failed.';
+    errEl.classList.remove('d-none');
+  }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  const r = await fetch(`/api/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
+  const d = await r.json();
+  if (d.ok) loadUsers();
+  else alert(d.error || 'Failed to delete user.');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+loadUsers();
+</script>
+{% endblock %}

@@ -21,7 +21,7 @@ def wait_for_callback(port: int = 8080, timeout: int = 120) -> dict:
             if self.path.startswith("/callback"):
                 params = parse_qs(urlparse(self.path).query)
                 result.update({k: v[0] for k, v in params.items()})
-                self._respond("<h2 style='font-family:sans-serif;color:green'>Done — you can close this tab.</h2>")
+                self._respond("<h2 style='font-family:sans-serif;color:green'>Done - you can close this tab.</h2>")
                 done.set()
             else:
                 self._respond("<h2 style='font-family:sans-serif'>Waiting for auth callback…</h2>")

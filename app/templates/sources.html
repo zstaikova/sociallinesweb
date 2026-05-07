@@ -144,6 +144,20 @@ const TYPE_FIELDS = {
         <label class="form-label small fw-semibold mb-1">Min score</label>
         <input type="number" class="form-control form-control-sm" id="cfg-min_score" value="100" min="0">
       </div>
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">Must include keywords <span class="text-muted fw-normal">(comma-separated, post title must match at least one)</span></label>
+        <input type="text" class="form-control form-control-sm" id="cfg-allowlist" placeholder="family, parenting, kids, mom, dad, pet, dog, cat, wholesome, baby, toddler, cute">
+      </div>
+      <div class="col-12">
+        <label class="form-label small fw-semibold mb-1">Block keywords <span class="text-muted fw-normal">(comma-separated, posts matching any will be skipped)</span></label>
+        <input type="text" class="form-control form-control-sm" id="cfg-blocklist" placeholder="nsfw, adult, sexual, political, drug, violence">
+      </div>
+      <div class="col-12">
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="cfg-skip_nsfw" checked>
+          <label class="form-check-label small" for="cfg-skip_nsfw">Always skip NSFW posts</label>
+        </div>
+      </div>
     </div>`,
 
   google: `
@@ -260,7 +274,9 @@ function showAddPanel(source = null) {
   if (source?.config) {
     Object.entries(source.config).forEach(([k, v]) => {
       const el = document.getElementById('cfg-' + k);
-      if (el) el.value = v;
+      if (!el) return;
+      if (el.type === 'checkbox') el.checked = !!v;
+      else el.value = v;
     });
   }
 
@@ -277,8 +293,12 @@ function collectConfig(type) {
   const cfg = {};
   document.querySelectorAll('#type-fields [id^="cfg-"]').forEach(el => {
     const key = el.id.replace('cfg-', '');
-    const val = el.type === 'number' ? (parseInt(el.value) || 0) : el.value;
-    if (val !== '' && val !== 0) cfg[key] = val;
+    if (el.type === 'checkbox') {
+      cfg[key] = el.checked;
+    } else {
+      const val = el.type === 'number' ? (parseInt(el.value) || 0) : el.value;
+      if (val !== '' && val !== 0) cfg[key] = val;
+    }
   });
   return cfg;
 }
@@ -403,7 +423,12 @@ async function loadSources() {
 }
 
 function configSummary(type, cfg) {
-  if (type === 'reddit')  return `r/${cfg.subreddit || '?'} · ${cfg.sort || 'hot'}`;
+  if (type === 'reddit') {
+    let s = `r/${cfg.subreddit || '?'} · ${cfg.sort || 'hot'}`;
+    if (cfg.allowlist) s += ` · ✓ ${cfg.allowlist.split(',').slice(0,3).join(',')}…`;
+    if (cfg.blocklist) s += ` · ✗ ${cfg.blocklist.split(',').slice(0,2).join(',')}…`;
+    return s;
+  }
   if (type === 'google')  return cfg.query || '';
   if (type === 'url')     return (cfg.url || '').slice(0, 40);
   if (type === 'article') return (cfg.url || '').slice(0, 40);
