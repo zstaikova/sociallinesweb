@@ -1,12 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Users — Socialline{% endblock %}
+{% block title %}Users &amp; Brands — Socialline{% endblock %}
 
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-4">
-  <h4 class="mb-0">Users</h4>
-  <button class="btn btn-primary btn-sm" onclick="showCreateModal()">
-    <i class="bi bi-person-plus me-1"></i>Add User
-  </button>
+  <h4 class="mb-0">Users &amp; Brands</h4>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-primary btn-sm" onclick="showCreateBrandModal()">
+      <i class="bi bi-layers me-1"></i>Add Brand
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="showCreateModal()">
+      <i class="bi bi-person-plus me-1"></i>Add User
+    </button>
+  </div>
 </div>
 
 <div class="card shadow-sm">
@@ -34,6 +39,61 @@
   <div><span class="badge bg-warning-subtle text-warning border border-warning-subtle me-2">reviewer</span>TikTok posting only — for app certification review</div>
 </div>
 
+<!-- Brands section -->
+<div class="d-flex align-items-center justify-content-between mt-5 mb-3">
+  <h5 class="mb-0">Brands</h5>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <table class="table table-hover mb-0" id="brands-table">
+      <thead style="background:#f8f9fa;">
+        <tr>
+          <th class="px-4 py-3 small fw-semibold text-muted border-0">Brand</th>
+          <th class="py-3 small fw-semibold text-muted border-0">Slug</th>
+          <th class="py-3 small fw-semibold text-muted border-0">Owner</th>
+          <th class="py-3 small fw-semibold text-muted border-0">Created</th>
+          <th class="py-3 border-0"></th>
+        </tr>
+      </thead>
+      <tbody id="brands-tbody">
+        <tr><td colspan="5" class="text-center text-muted py-4">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Create brand modal -->
+<div class="modal fade" id="createBrandModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content rounded-4">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold"><i class="bi bi-layers me-2 text-primary"></i>Add Brand</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="createBrandErr" class="d-none mb-2 small text-danger fw-semibold"></div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Brand Name</label>
+          <input type="text" id="bName" class="form-control form-control-sm" placeholder="FamJam Memes">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Slug <span class="text-muted fw-normal">(URL-safe)</span></label>
+          <input type="text" id="bSlug" class="form-control form-control-sm" placeholder="famjam">
+        </div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold mb-1">Owner (username)</label>
+          <input type="text" id="bOwner" class="form-control form-control-sm" placeholder="zstaikova">
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="submitCreateBrand()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Create user modal -->
 <div class="modal fade" id="createModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered modal-sm">
@@ -50,7 +110,7 @@
         </div>
         <div class="mb-2">
           <label class="form-label small fw-semibold mb-1">Password</label>
-          <input type="password" id="newPassword" class="form-control form-control-sm" placeholder="min 4 characters">
+          <input type="password" id="newPassword" class="form-control form-control-sm" placeholder="min 8 characters">
         </div>
         <div class="mb-3">
           <label class="form-label small fw-semibold mb-1">Role</label>
@@ -81,7 +141,7 @@
         <div id="resetPwErr" class="d-none mb-2 small text-danger fw-semibold"></div>
         <div class="mb-3">
           <label class="form-label small fw-semibold mb-1">New Password</label>
-          <input type="password" id="resetPwValue" class="form-control form-control-sm" placeholder="min 4 characters">
+          <input type="password" id="resetPwValue" class="form-control form-control-sm" placeholder="min 8 characters">
         </div>
       </div>
       <div class="modal-footer border-0 pt-0">
@@ -163,8 +223,8 @@ async function createUser() {
   const role     = document.getElementById('newRole').value;
   const errEl    = document.getElementById('createErr');
 
-  if (!username || password.length < 4) {
-    errEl.textContent = 'Username and password (min 4 chars) required.';
+  if (!username || password.length < 8) {
+    errEl.textContent = 'Username and password (min 8 chars) required.';
     errEl.classList.remove('d-none');
     return;
   }
@@ -208,8 +268,8 @@ function showResetPw(username) {
 async function submitResetPw() {
   const pw    = document.getElementById('resetPwValue').value;
   const errEl = document.getElementById('resetPwErr');
-  if (pw.length < 4) {
-    errEl.textContent = 'Password must be at least 4 characters.';
+  if (pw.length < 8) {
+    errEl.textContent = 'Password must be at least 8 characters.';
     errEl.classList.remove('d-none');
     return;
   }
@@ -244,6 +304,79 @@ function escHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// ── Brands ──────────────────────────────────────────────────────────────────
+
+async function loadBrands() {
+  const r = await fetch('/api/brands');
+  const brands = await r.json();
+  const tbody = document.getElementById('brands-tbody');
+  if (!brands.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No brands yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = brands.map(b => `
+    <tr>
+      <td class="px-4 py-3 fw-semibold">${escHtml(b.name)}</td>
+      <td class="py-3"><code class="text-muted" style="font-size:.8rem;">${escHtml(b.slug)}</code></td>
+      <td class="py-3 small text-muted">${escHtml(b.owner_username)}</td>
+      <td class="py-3 text-muted small">${fmtDate(b.created_at)}</td>
+      <td class="py-3 text-end pe-4">
+        <button class="btn btn-outline-danger btn-sm py-0" style="font-size:.75rem;"
+                onclick="deleteBrand('${escHtml(b.id)}','${escHtml(b.name)}')">
+          <i class="bi bi-trash"></i>
+        </button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function showCreateBrandModal() {
+  document.getElementById('bName').value = '';
+  document.getElementById('bSlug').value = '';
+  document.getElementById('bOwner').value = '';
+  document.getElementById('createBrandErr').classList.add('d-none');
+  new bootstrap.Modal(document.getElementById('createBrandModal')).show();
+}
+
+document.getElementById('bName').addEventListener('input', function() {
+  document.getElementById('bSlug').value =
+    this.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+});
+
+async function submitCreateBrand() {
+  const name  = document.getElementById('bName').value.trim();
+  const slug  = document.getElementById('bSlug').value.trim();
+  const owner = document.getElementById('bOwner').value.trim();
+  const errEl = document.getElementById('createBrandErr');
+  if (!name || !slug || !owner) {
+    errEl.textContent = 'Name, slug, and owner are required.';
+    errEl.classList.remove('d-none');
+    return;
+  }
+  const r = await fetch('/api/brands', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name, slug, owner }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    bootstrap.Modal.getInstance(document.getElementById('createBrandModal')).hide();
+    loadBrands();
+  } else {
+    errEl.textContent = d.error || 'Failed to create brand.';
+    errEl.classList.remove('d-none');
+  }
+}
+
+async function deleteBrand(brandId, name) {
+  if (!confirm(`Delete brand "${name}"? This cannot be undone.`)) return;
+  const r = await fetch(`/api/brands/${encodeURIComponent(brandId)}`, { method: 'DELETE' });
+  const d = await r.json();
+  if (d.ok) loadBrands();
+  else alert(d.error || 'Failed to delete brand.');
+}
+
 loadUsers();
+loadBrands();
 </script>
 {% endblock %}

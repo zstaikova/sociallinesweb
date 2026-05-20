@@ -16,7 +16,7 @@
 
   <nav class="app-nav d-flex align-items-center px-4">
     <!-- Brand -->
-    <a class="app-brand me-5" href="/queue">
+    <a class="app-brand me-5" href="{{ '/users' if session.get('role') == 'admin' else '/queue' }}">
       <i class="bi bi-camera-reels"></i>
       <span>Socialline</span>
     </a>
@@ -24,17 +24,13 @@
     <!-- Primary nav links -->
     <div class="d-flex align-items-center gap-1 flex-grow-1">
       {% if session.get('role') == 'admin' %}
-      <a class="nav-pill {% if request.path.startswith('/accounts') %}active{% endif %}" href="/accounts">
-        <i class="bi bi-people"></i> Accounts
-      </a>
       <a class="nav-pill {% if request.path == '/users' %}active{% endif %}" href="/users">
-        <i class="bi bi-person-gear"></i> Users
+        <i class="bi bi-person-gear"></i> Users &amp; Brands
       </a>
-      {% elif session.get('role') == 'user' %}
+      {% else %}
       <a class="nav-pill {% if request.path.startswith('/accounts') %}active{% endif %}" href="/accounts">
         <i class="bi bi-people"></i> Accounts
       </a>
-      {% endif %}
       <a class="nav-pill {% if request.path == '/sources' %}active{% endif %}" href="/sources">
         <i class="bi bi-collection"></i> Sources
       </a>
@@ -44,10 +40,45 @@
       <a class="nav-pill {% if request.path == '/calendar' %}active{% endif %}" href="/calendar">
         <i class="bi bi-calendar3"></i> Calendar
       </a>
+      {% endif %}
     </div>
 
-    <!-- Right side: user + logout -->
+    <!-- Right side: brand switcher + user + logout -->
     <div class="d-flex align-items-center gap-2">
+      {% if session.get('user') and user_brands %}
+      <div class="dropdown">
+        <button class="btn btn-sm d-flex align-items-center gap-1 px-2 py-1"
+                style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;font-size:.8rem;font-weight:600;"
+                data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-layers" style="font-size:.85rem;color:#7C3AED;"></i>
+          {{ active_brand.name if active_brand else 'No brand' }}
+          <i class="bi bi-chevron-down" style="font-size:.65rem;color:#6b7280;"></i>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow-sm" style="min-width:180px;font-size:.85rem;">
+          {% for b in user_brands %}
+          <li>
+            <a class="dropdown-item d-flex align-items-center gap-2 py-2
+                      {% if b.id == session.get('active_brand_id') %}fw-semibold{% endif %}"
+               href="#" onclick="switchBrand('{{ b.id }}'); return false;">
+              {% if b.id == session.get('active_brand_id') %}
+              <i class="bi bi-check2 text-primary" style="font-size:.8rem;width:14px;"></i>
+              {% else %}
+              <span style="width:14px;display:inline-block;"></span>
+              {% endif %}
+              {{ b.name }}
+            </a>
+          </li>
+          {% endfor %}
+          <li><hr class="dropdown-divider my-1"></li>
+          <li>
+            <a class="dropdown-item small text-muted py-1" href="#" onclick="showNewBrandModal(); return false;">
+              <i class="bi bi-plus-circle me-1"></i>New brand
+            </a>
+          </li>
+        </ul>
+      </div>
+      {% endif %}
+
       {% if session.get('user') %}
       <span class="nav-user-badge">
         <i class="bi bi-person-circle"></i>
@@ -73,7 +104,7 @@
     <span class="spinner-border spinner-border-sm me-2"></span>Restarting — please wait…
   </div>
 
-  {% if session.get('role') == 'admin' %}
+  {% if session.get('user') %}
   <div id="default-pw-banner" class="d-none text-center py-2 small"
        style="background:#fff3cd;color:#92400e;border-bottom:1px solid #fbbf24;">
     <i class="bi bi-shield-exclamation me-1"></i>
@@ -94,7 +125,7 @@
     }, 800);
   }
 
-  {% if session.get('role') == 'admin' %}
+  {% if session.get('user') %}
   // Check if still on default password
   (async () => {
     try {
@@ -126,7 +157,7 @@
               </div>
               <div class="mb-2">
                 <label class="form-label small mb-1 fw-semibold">New Password</label>
-                <input type="password" id="cpNew" class="form-control form-control-sm" placeholder="min 4 characters">
+                <input type="password" id="cpNew" class="form-control form-control-sm" placeholder="min 8 characters">
               </div>
               <div class="mb-3">
                 <label class="form-label small mb-1 fw-semibold">Confirm New Password</label>
@@ -149,6 +180,73 @@
     new bootstrap.Modal(document.getElementById('changePwModal')).show();
   }
 
+  async function switchBrand(brandId) {
+    const r = await fetch('/api/brands/' + brandId + '/switch', { method: 'POST' });
+    if (r.ok) location.reload();
+  }
+
+  function showNewBrandModal() {
+    if (!document.getElementById('newBrandModal')) {
+      document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="newBrandModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+          <div class="modal-content rounded-4">
+            <div class="modal-header border-0 pb-0">
+              <h6 class="modal-title fw-bold"><i class="bi bi-layers me-2 text-primary"></i>New Brand</h6>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div id="newBrandErr" class="d-none mb-2 small text-danger fw-semibold"></div>
+              <div class="mb-2">
+                <label class="form-label small mb-1 fw-semibold">Brand Name</label>
+                <input type="text" id="nbName" class="form-control form-control-sm" placeholder="FamJam Memes">
+              </div>
+              <div class="mb-2">
+                <label class="form-label small mb-1 fw-semibold">Slug <span class="text-muted fw-normal">(URL-safe, no spaces)</span></label>
+                <input type="text" id="nbSlug" class="form-control form-control-sm" placeholder="famjam">
+              </div>
+            </div>
+            <div class="modal-footer border-0 pt-0">
+              <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button class="btn btn-sm btn-primary" onclick="submitNewBrand()">Create</button>
+            </div>
+          </div>
+        </div>
+      </div>`);
+      document.getElementById('nbName').addEventListener('input', function() {
+        document.getElementById('nbSlug').value = this.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      });
+    }
+    document.getElementById('nbName').value = '';
+    document.getElementById('nbSlug').value = '';
+    document.getElementById('newBrandErr').classList.add('d-none');
+    new bootstrap.Modal(document.getElementById('newBrandModal')).show();
+  }
+
+  async function submitNewBrand() {
+    const name = document.getElementById('nbName').value.trim();
+    const slug = document.getElementById('nbSlug').value.trim();
+    const errEl = document.getElementById('newBrandErr');
+    if (!name || !slug) {
+      errEl.textContent = 'Name and slug are required.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+    const r = await fetch('/api/brands', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, slug }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      bootstrap.Modal.getInstance(document.getElementById('newBrandModal')).hide();
+      await switchBrand(d.brand.id);
+    } else {
+      errEl.textContent = d.error || 'Failed to create brand.';
+      errEl.classList.remove('d-none');
+    }
+  }
+
   async function submitChangePw() {
     const current = document.getElementById('cpCurrent').value;
     const nw      = document.getElementById('cpNew').value;
@@ -160,8 +258,8 @@
       errEl.classList.remove('d-none');
       return;
     }
-    if (nw.length < 4) {
-      errEl.textContent = 'Password must be at least 4 characters.';
+    if (nw.length < 8) {
+      errEl.textContent = 'Password must be at least 8 characters.';
       errEl.classList.remove('d-none');
       return;
     }

@@ -109,10 +109,10 @@ class ScheduleStore:
 
 # ── Background runner ────────────────────────────────────────────────────────
 
-def _run_due_posts(store: ScheduleStore, queue_dir: Path):
+def _run_due_posts(store: ScheduleStore, queue_dir: Path, accounts_file: Path = None):
     """Called every 30 s by the background thread to fire due posts."""
     import sys
-    root = queue_dir.parent.parent  # famjammemes/../ = project root
+    root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
 
     due = store.get_due()
@@ -120,13 +120,15 @@ def _run_due_posts(store: ScheduleStore, queue_dir: Path):
         return
 
     for post in due:
-        _publish_scheduled(store, post, queue_dir, root)
+        _publish_scheduled(store, post, queue_dir, root, accounts_file=accounts_file)
 
 
-def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: Path):
+def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: Path,
+                       accounts_file: Path = None):
     """Publish one scheduled post and update its status."""
     from pipeline.core.content_item import ContentItem
     from pipeline.core.content_store import ContentStore
+    from pipeline.core.accounts import AccountStore
     from pipeline.brands.famjam.config import create_pipeline
 
     filename  = post["filename"]
@@ -140,8 +142,10 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
         return
 
     try:
-        content_store = ContentStore()
-        pipeline      = create_pipeline(platforms=platforms, store=content_store)
+        content_store = ContentStore(queue_dir.parent / "content.db")
+        acct_store    = AccountStore(accounts_file) if accounts_file else AccountStore()
+        pipeline      = create_pipeline(platforms=platforms, store=content_store,
+                                        account_store=acct_store)
 
         item = ContentItem(
             source_url=f"file://{image_path.resolve()}",
@@ -192,13 +196,19 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
         store.update_status(post["id"], "failed", {"error": str(e)})
 
 
-def start_scheduler(store: ScheduleStore, queue_dir: Path, interval: int = 30):
-    """Start the background scheduler thread. Safe to call multiple times."""
+def start_scheduler(get_stores_fn, interval: int = 30):
+    """
+    Start the background scheduler thread. Safe to call multiple times.
+
+    get_stores_fn: callable returning list of (sched_store, queue_dir, accounts_file)
+                   Called on every tick so new brands are picked up automatically.
+    """
     def _loop():
         import time
         while True:
             try:
-                _run_due_posts(store, queue_dir)
+                for sched_store, queue_dir, accounts_file in get_stores_fn():
+                    _run_due_posts(sched_store, queue_dir, accounts_file=accounts_file)
             except Exception:
                 pass
             time.sleep(interval)
@@ -218,20 +228,24 @@ _SCHEDULE_INTERVALS = {
 }
 
 
-def start_source_puller(source_store, pull_engine, sched_store: ScheduleStore,
-                        queue_dir: Path, load_default_sched,
-                        interval: int = 60):
+def start_source_puller(get_resources_fn, interval: int = 60):
     """
     Background thread that fires source pulls on their configured schedule,
     then auto-fills posting slots if on_upload trigger is enabled.
-    Checks every `interval` seconds (default 60).
+
+    get_resources_fn: callable returning list of
+        (source_store, pull_engine, sched_store, queue_dir, sched_cfg_file)
+    Checked every `interval` seconds (default 60).
     """
     def _loop():
         import time
         while True:
             try:
-                _run_due_pulls(source_store, pull_engine, sched_store,
-                               queue_dir, load_default_sched)
+                for source_store, pull_engine, sched_store, queue_dir, sched_cfg_file in get_resources_fn():
+                    def _load_sched(f=sched_cfg_file):
+                        return _load_sched_file(f)
+                    _run_due_pulls(source_store, pull_engine, sched_store,
+                                   queue_dir, _load_sched)
             except Exception:
                 pass
             time.sleep(interval)
@@ -239,6 +253,24 @@ def start_source_puller(source_store, pull_engine, sched_store: ScheduleStore,
     t = threading.Thread(target=_loop, daemon=True, name="source-puller")
     t.start()
     return t
+
+
+def _load_sched_file(path: Path) -> dict:
+    """Load default_schedule.json from a brand's directory."""
+    _defaults = {
+        "enabled": False,
+        "days_of_week": list(range(7)),
+        "times": [],
+        "days_ahead": 7,
+        "platforms": [],
+        "trigger": "manual",
+    }
+    try:
+        if path.exists():
+            return {**_defaults, **__import__("json").loads(path.read_text())}
+    except Exception:
+        pass
+    return _defaults
 
 
 def _run_due_pulls(source_store, pull_engine, sched_store: ScheduleStore,

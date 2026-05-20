@@ -2,6 +2,7 @@
 import sys
 import copy
 import json
+import logging
 import os
 import secrets
 import subprocess
@@ -23,7 +24,7 @@ sys.path.insert(0, str(APP_DIR))
 from dotenv import load_dotenv, set_key
 load_dotenv(ROOT / ".env")
 
-from flask import Flask, render_template, request, jsonify, send_from_directory, session, redirect
+from flask import Flask, render_template, request, jsonify, send_from_directory, session, redirect, abort
 from urllib.parse import urlencode
 from pipeline.core.accounts import AccountStore
 from users import UserStore
@@ -33,27 +34,161 @@ ENV_FILE   = ROOT / ".env"
 DATA_DIR   = ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-_user_store  = UserStore(DATA_DIR / "users.db")
-_sched_store = ScheduleStore(ROOT / "famjammemes" / "schedule.db")
-from sources import SourceStore, PullEngine
-_source_store = SourceStore(DATA_DIR / "sources.db")
-_pull_engine  = None  # init after QUEUE_DIR is defined
+# ── Error log ─────────────────────────────────────────────────────────────────
+_log_file = DATA_DIR / "errors.log"
+logging.basicConfig(
+    filename=str(_log_file),
+    level=logging.ERROR,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+_elog = logging.getLogger("socialline")
 
-# Per-user AccountStore cache  {username → AccountStore}
-_acct_stores: dict[str, AccountStore] = {}
+# ── Brand store ───────────────────────────────────────────────────────────────
+import brands as _brands_module
+_brands_module.BRAND_DATA_ROOT = DATA_DIR / "brands"
+_brands_module.BRAND_DATA_ROOT.mkdir(parents=True, exist_ok=True)
+from brands import BrandStore
+_brand_store = BrandStore(DATA_DIR / "brands.db")
+
+_user_store = UserStore(DATA_DIR / "users.db")
+
+from sources import SourceStore, PullEngine
+
+# ── Per-brand resource caches (keyed by brand_id) ────────────────────────────
+_brand_sched_stores:  dict[str, ScheduleStore] = {}
+_brand_source_stores: dict[str, SourceStore]   = {}
+_brand_pull_engines:  dict[str, "PullEngine"]  = {}
+_brand_acct_stores:   dict[str, AccountStore]  = {}
+
+
+
+# ── Per-brand path/resource helpers ──────────────────────────────────────────
+
+def _get_active_brand() -> "dict | None":
+    try:
+        from flask import session as _sess
+        bid = _sess.get("active_brand_id")
+    except RuntimeError:
+        return None
+    return _brand_store.get(bid) if bid else None
+
+
+def _brand_dir_for(brand_id: str) -> Path:
+    return DATA_DIR / "brands" / brand_id
+
+
+def _get_queue_dir() -> Path:
+    b = _get_active_brand()
+    if not b:
+        abort(409, "No active brand selected")
+    return _brand_dir_for(b["id"]) / "queue"
+
+
+def _get_posted_dir() -> Path:
+    b = _get_active_brand()
+    if not b:
+        abort(409, "No active brand selected")
+    return _brand_dir_for(b["id"]) / "posted"
+
+
+def _sched_store_for(brand_id: str) -> ScheduleStore:
+    if brand_id not in _brand_sched_stores:
+        bdir = _brand_dir_for(brand_id)
+        bdir.mkdir(parents=True, exist_ok=True)
+        _brand_sched_stores[brand_id] = ScheduleStore(bdir / "schedule.db")
+    return _brand_sched_stores[brand_id]
+
+
+def _get_sched_store() -> ScheduleStore:
+    b = _get_active_brand()
+    if b:
+        return _sched_store_for(b["id"])
+    abort(409, "No active brand selected")
+
+
+def _source_store_for(brand_id: str) -> SourceStore:
+    if brand_id not in _brand_source_stores:
+        bdir = _brand_dir_for(brand_id)
+        bdir.mkdir(parents=True, exist_ok=True)
+        _brand_source_stores[brand_id] = SourceStore(bdir / "sources.db")
+    return _brand_source_stores[brand_id]
+
+
+def _get_source_store() -> SourceStore:
+    b = _get_active_brand()
+    if b:
+        return _source_store_for(b["id"])
+    abort(409, "No active brand selected")
+
+
+def _pull_engine_for(brand_id: str) -> PullEngine:
+    if brand_id not in _brand_pull_engines:
+        queue_dir = _brand_dir_for(brand_id) / "queue"
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        _brand_pull_engines[brand_id] = PullEngine(queue_dir, ENV_FILE)
+    return _brand_pull_engines[brand_id]
+
+
+def _get_pull_engine() -> PullEngine:
+    b = _get_active_brand()
+    if b:
+        return _pull_engine_for(b["id"])
+    abort(409, "No active brand selected")
+
+
+def _acct_store_for(brand_id: str) -> AccountStore:
+    if brand_id not in _brand_acct_stores:
+        accts_file = _brand_dir_for(brand_id) / "accounts.enc"
+        _brand_acct_stores[brand_id] = AccountStore(accts_file)
+    return _brand_acct_stores[brand_id]
+
 
 def _get_acct_store(username: str = None) -> AccountStore:
-    """Return the shared platform credential store.
+    b = _get_active_brand()
+    if b:
+        return _acct_store_for(b["id"])
+    abort(409, "No active brand selected")
 
-    Platform credentials (Facebook, Instagram, etc.) belong to the brand,
-    not to individual users — all users share the same root accounts.enc.
-    """
-    if "shared" not in _acct_stores:
-        _acct_stores["shared"] = AccountStore()
-    return _acct_stores["shared"]
 
-# Keep a module-level alias so existing code that hasn't been updated yet still works
-_acct_store = None  # replaced by _get_acct_store() calls below
+def _get_content_store():
+    from pipeline.core.content_store import ContentStore
+    b = _get_active_brand()
+    if not b:
+        abort(409, "No active brand selected")
+    return ContentStore(_brand_dir_for(b["id"]) / "content.db")
+
+
+# ── Multi-brand scheduler/puller helpers ─────────────────────────────────────
+
+def _all_brand_scheduler_data():
+    """Returns list of (sched_store, queue_dir, accounts_file) for all brands."""
+    result = []
+    for brand in _brand_store.list_all():
+        bid = brand["id"]
+        bdir = _brand_dir_for(bid)
+        result.append((
+            _sched_store_for(bid),
+            bdir / "queue",
+            bdir / "accounts.enc",
+        ))
+    return result
+
+
+def _all_brand_puller_data():
+    """Returns (source_store, pull_engine, sched_store, queue_dir, sched_cfg) per brand."""
+    result = []
+    for brand in _brand_store.list_all():
+        bid = brand["id"]
+        bdir = _brand_dir_for(bid)
+        result.append((
+            _source_store_for(bid),
+            _pull_engine_for(bid),
+            _sched_store_for(bid),
+            bdir / "queue",
+            bdir / "default_schedule.json",
+        ))
+    return result
 
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
@@ -342,11 +477,41 @@ app.secret_key = _ensure_secret_key()
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-QUEUE_DIR  = ROOT / "famjammemes" / "queue"
-POSTED_DIR = ROOT / "famjammemes" / "posted"
-_pull_engine = PullEngine(QUEUE_DIR, ENV_FILE)
+
+@app.context_processor
+def _inject_brand_context():
+    if not session.get("user"):
+        return {"active_brand": None, "user_brands": []}
+    active = _get_active_brand()
+    username = session["user"]
+    all_brands = _brand_store.list_for_user(username)
+    return {"active_brand": active, "user_brands": all_brands}
+
 QUEUE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mov"}
 IMAGE_EXTENSIONS = QUEUE_EXTENSIONS  # keep alias used elsewhere
+
+
+_BRAND_FREE_PATHS = {"/login", "/logout", "/api/brands", "/users", "/api/users", "/api/auth"}
+
+@app.before_request
+def ensure_active_brand():
+    """Auto-assign active_brand_id; redirect brand-less users away from content pages."""
+    if not session.get("user"):
+        return
+    if session.get("active_brand_id"):
+        return
+    username = session["user"]
+    brands = _brand_store.list_for_user(username)
+    if brands:
+        session["active_brand_id"] = brands[0]["id"]
+        return
+    # User has no brands — allow only safe paths, redirect everything else
+    path = request.path
+    if any(path.startswith(p) for p in _BRAND_FREE_PATHS) or path == "/":
+        return
+    if request.path.startswith("/api/"):
+        abort(409, "No active brand — create or join a brand first")
+    return redirect("/")
 
 
 @app.after_request
@@ -404,6 +569,10 @@ def login():
         if user:
             session["user"] = user["username"]
             session["role"] = user["role"]
+            # Set active brand to user's first brand (admin sees all)
+            brands = _brand_store.list_for_user(user["username"])
+            if brands:
+                session["active_brand_id"] = brands[0]["id"]
             next_url = request.form.get("next") or "/queue"
             return redirect(next_url)
         error = "Invalid username or password."
@@ -423,8 +592,8 @@ def api_change_password():
     data    = request.get_json()
     current = data.get("current_password", "")
     new_pw  = data.get("new_password", "")
-    if not new_pw or len(new_pw) < 4:
-        return jsonify({"error": "New password must be at least 4 characters"}), 400
+    if not new_pw or len(new_pw) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
 
     username = session["user"]
     if not _user_store.authenticate(username, current):
@@ -467,8 +636,8 @@ def api_users_create():
     username = data.get("username", "").strip()
     password = data.get("password", "")
     role     = data.get("role", "user")
-    if not username or not password or len(password) < 4:
-        return jsonify({"error": "Username and password (min 4 chars) required"}), 400
+    if not username or not password or len(password) < 8:
+        return jsonify({"error": "Username and password (min 8 chars) required"}), 400
     if role not in UserStore.ROLES:
         return jsonify({"error": f"Invalid role. Must be one of: {', '.join(UserStore.ROLES)}"}), 400
     if _user_store.get(username):
@@ -483,8 +652,6 @@ def api_users_delete(username):
     if username == session["user"]:
         return jsonify({"error": "Cannot delete your own account"}), 400
     _user_store.delete(username)
-    # Clear their cached AccountStore
-    _acct_stores.pop(username, None)
     return jsonify({"ok": True})
 
 
@@ -506,10 +673,81 @@ def api_users_update_role(username):
 def api_users_reset_password(username):
     data     = request.get_json()
     new_pw   = data.get("password", "")
-    if len(new_pw) < 4:
-        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    if len(new_pw) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
     _user_store.update_password(username, new_pw)
     return jsonify({"ok": True})
+
+
+# ── Brand management ──────────────────────────────────────────────────────────
+
+@app.route("/api/brands")
+@login_required
+def api_brands_list():
+    username  = session["user"]
+    active_id = session.get("active_brand_id")
+    if session.get("role") == "admin":
+        brands = _brand_store.list_all()
+    else:
+        brands = _brand_store.list_for_user(username)
+    return jsonify([{**b, "active": b["id"] == active_id} for b in brands])
+
+
+@app.route("/api/brands", methods=["POST"])
+@login_required
+def api_brands_create():
+    data  = request.get_json()
+    slug  = data.get("slug", "").strip().lower().replace(" ", "-")
+    name  = data.get("name", "").strip()
+    if not slug or not name:
+        return jsonify({"error": "slug and name required"}), 400
+    username = session["user"]
+    owner = data.get("owner", username) if session.get("role") == "admin" else username
+    try:
+        brand = _brand_store.create(slug, name, owner)
+        return jsonify({"ok": True, "brand": brand})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/brands/<brand_id>/switch", methods=["POST"])
+@login_required
+def api_brands_switch(brand_id):
+    brand = _brand_store.get(brand_id)
+    if not brand:
+        return jsonify({"error": "Brand not found"}), 404
+    if session.get("role") != "admin" and brand["owner_username"] != session["user"]:
+        return jsonify({"error": "Access denied"}), 403
+    session["active_brand_id"] = brand_id
+    return jsonify({"ok": True, "brand": brand})
+
+
+@app.route("/api/brands/<brand_id>", methods=["DELETE"])
+@admin_required
+def api_brands_delete(brand_id):
+    brand = _brand_store.get(brand_id)
+    if not brand:
+        return jsonify({"error": "Brand not found"}), 404
+    _brand_store.delete(brand_id)
+    if session.get("active_brand_id") == brand_id:
+        session.pop("active_brand_id", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/brands/<brand_id>", methods=["PUT"])
+@login_required
+def api_brands_update(brand_id):
+    brand = _brand_store.get(brand_id)
+    if not brand:
+        return jsonify({"error": "Brand not found"}), 404
+    if brand["owner_username"] != session["user"]:
+        return jsonify({"error": "Access denied"}), 403
+    data = request.get_json()
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    updated = _brand_store.update(brand_id, name)
+    return jsonify({"ok": True, "brand": updated})
 
 
 # ── App routes ─────────────────────────────────────────────────────────────────
@@ -517,24 +755,26 @@ def api_users_reset_password(username):
 @app.route("/")
 @login_required
 def index():
+    if not session.get("active_brand_id"):
+        return redirect("/users")
     return redirect("/queue")
+
 
 
 @app.route("/queue")
 @login_required
 def queue():
-    from pipeline.core.content_store import ContentStore
     try:
-        db_stats = ContentStore().stats()
+        db_stats = _get_content_store().stats()
     except Exception:
         db_stats = {"total": 0, "posted": 0, "failed": 0}
-    posted_items = _list_dir(POSTED_DIR, reverse=True)
+    posted_items = _list_dir(_get_posted_dir(), reverse=True)
     return render_template(
         "queue.html",
-        images=_list_dir(QUEUE_DIR),
+        images=_list_dir(_get_queue_dir()),
         posted=posted_items,
         stats={
-            "queue":  len(_list_dir(QUEUE_DIR)),
+            "queue":  len(_list_dir(_get_queue_dir())),
             "posted": len(posted_items),
             "db_posted": db_stats.get("posted", 0),
         },
@@ -544,19 +784,19 @@ def queue():
 @app.route("/media/queue/<path:filename>")
 @login_required
 def serve_queue_media(filename):
-    return send_from_directory(QUEUE_DIR, filename)
+    return send_from_directory(_get_queue_dir(), filename)
 
 
 @app.route("/media/posted/<path:filename>")
 @login_required
 def serve_posted_media(filename):
-    return send_from_directory(POSTED_DIR, filename)
+    return send_from_directory(_get_posted_dir(), filename)
 
 
 @app.route("/api/queue/<path:filename>", methods=["DELETE"])
 @login_required
 def api_queue_delete(filename):
-    p = QUEUE_DIR / filename
+    p = _get_queue_dir() / filename
     if p.exists() and p.is_file():
         p.unlink()
     return jsonify({"ok": True})
@@ -565,7 +805,7 @@ def api_queue_delete(filename):
 @app.route("/api/posted/<path:filename>", methods=["DELETE"])
 @login_required
 def api_posted_delete(filename):
-    p = POSTED_DIR / filename
+    p = _get_posted_dir() / filename
     if p.exists() and p.is_file():
         p.unlink()
     return jsonify({"ok": True})
@@ -574,15 +814,15 @@ def api_posted_delete(filename):
 @app.route("/api/queue/<path:filename>/move-to-posted", methods=["POST"])
 @login_required
 def api_move_to_posted(filename):
-    src = QUEUE_DIR / filename
+    src = _get_queue_dir() / filename
     if not src.exists():
         return jsonify({"error": "File not found"}), 404
-    POSTED_DIR.mkdir(parents=True, exist_ok=True)
-    dest = POSTED_DIR / filename
+    _get_posted_dir().mkdir(parents=True, exist_ok=True)
+    dest = _get_posted_dir() / filename
     stem, suffix = src.stem, src.suffix
     counter = 1
     while dest.exists():
-        dest = POSTED_DIR / f"{stem}_{counter}{suffix}"
+        dest = _get_posted_dir() / f"{stem}_{counter}{suffix}"
         counter += 1
     src.rename(dest)
     return jsonify({"ok": True})
@@ -607,12 +847,12 @@ def api_queue_upload():
         if ext not in QUEUE_EXTENSIONS:
             results.append({"ok": False, "filename": f.filename, "error": f"Unsupported type: {ext}"})
             continue
-        QUEUE_DIR.mkdir(parents=True, exist_ok=True)
-        dest = QUEUE_DIR / Path(f.filename).name
+        _get_queue_dir().mkdir(parents=True, exist_ok=True)
+        dest = _get_queue_dir() / Path(f.filename).name
         stem, suffix = dest.stem, dest.suffix
         counter = 1
         while dest.exists():
-            dest = QUEUE_DIR / f"{stem}_{counter}{suffix}"
+            dest = _get_queue_dir() / f"{stem}_{counter}{suffix}"
             counter += 1
         f.save(dest)
         results.append({"ok": True, "filename": dest.name})
@@ -624,7 +864,7 @@ def api_queue_upload():
     cfg = _load_default_sched()
     if cfg.get("enabled") and cfg.get("trigger") == "on_upload" and cfg.get("platforms"):
         from datetime import datetime, timedelta
-        existing = {p["filename"] for p in _sched_store.list_all(status="pending")}
+        existing = {p["filename"] for p in _get_sched_store().list_all(status="pending")}
         days_ahead   = int(cfg.get("days_ahead", 7))
         times        = cfg.get("times", [])
         days_of_week = cfg.get("days_of_week", [])
@@ -640,12 +880,12 @@ def api_queue_upload():
                 slot_dt = day.replace(hour=h, minute=m, second=0, microsecond=0)
                 if slot_dt > now:
                     slots.append(slot_dt)
-        occupied = {p["scheduled_at"][:16] for p in _sched_store.list_all(status="pending")}
+        occupied = {p["scheduled_at"][:16] for p in _get_sched_store().list_all(status="pending")}
         free_slots = [s for s in slots if s.strftime("%Y-%m-%dT%H:%M") not in occupied]
         for slot_dt, r in zip(free_slots, [r for r in results if r["ok"]]):
             if r["filename"] not in existing:
                 captions = {p: Path(r["filename"]).stem.replace("_", " ") for p in platforms}
-                _sched_store.add(r["filename"], captions, platforms, {},
+                _get_sched_store().add(r["filename"], captions, platforms, {},
                                  slot_dt.isoformat(timespec="minutes"))
 
     return jsonify({"ok": True, "results": results})
@@ -654,19 +894,19 @@ def api_queue_upload():
 @app.route("/queue/<path:filename>")
 @login_required
 def editor(filename):
-    image_path = QUEUE_DIR / filename
+    image_path = _get_queue_dir() / filename
     if not image_path.exists():
         return "Image not found", 404
 
     # Load pre-generated caption sidecar if present (e.g. from article source)
-    caption_sidecar = QUEUE_DIR / (image_path.stem + ".caption.txt")
+    caption_sidecar = _get_queue_dir() / (image_path.stem + ".caption.txt")
     if caption_sidecar.exists():
         caption = caption_sidecar.read_text(encoding="utf-8").strip()
     else:
         caption = image_path.stem.replace("_", " ").replace("-", " ")
 
     # Check if this came from an article source
-    article_sidecar = QUEUE_DIR / (image_path.stem + ".article.json")
+    article_sidecar = _get_queue_dir() / (image_path.stem + ".article.json")
     is_article = article_sidecar.exists()
 
     return render_template("editor.html", filename=filename, caption=caption,
@@ -687,8 +927,8 @@ def api_generate_captions():
     is_article = False
     article_meta = {}
     if filename:
-        article_sidecar = QUEUE_DIR / (Path(filename).stem + ".article.json")
-        caption_sidecar = QUEUE_DIR / (Path(filename).stem + ".caption.txt")
+        article_sidecar = _get_queue_dir() / (Path(filename).stem + ".article.json")
+        caption_sidecar = _get_queue_dir() / (Path(filename).stem + ".caption.txt")
         if article_sidecar.exists():
             is_article = True
             article_meta = json.loads(article_sidecar.read_text(encoding="utf-8"))
@@ -699,7 +939,7 @@ def api_generate_captions():
         if is_article:
             captions = generate_article_captions(core_caption, article_meta)
         else:
-            image_path = (QUEUE_DIR / filename) if filename else None
+            image_path = (_get_queue_dir() / filename) if filename else None
             captions = generate_platform_captions(core_caption, image_path=image_path)
         return jsonify(captions)
     except Exception as e:
@@ -710,7 +950,6 @@ def api_generate_captions():
 @login_required
 def api_publish():
     from pipeline.core.content_item import ContentItem
-    from pipeline.core.content_store import ContentStore
     from pipeline.brands.famjam.config import create_pipeline
 
     data             = request.get_json()
@@ -726,7 +965,7 @@ def api_publish():
     if not filename or not platforms:
         return jsonify({"error": "filename and platforms required"}), 400
 
-    image_path = QUEUE_DIR / filename
+    image_path = _get_queue_dir() / filename
     if not image_path.exists():
         return jsonify({"error": "Image not found"}), 404
 
@@ -743,7 +982,7 @@ def api_publish():
     if not connected_platforms:
         return jsonify(results)
 
-    store    = ContentStore()
+    store    = _get_content_store()
     pipeline = create_pipeline(platforms=connected_platforms, store=store,
                                account_store=acct_store)
 
@@ -785,10 +1024,13 @@ def api_publish():
                 store.mark_posted(item.id, pname, post_id)
                 results[pname] = {"status": "posted", "post_id": post_id}
             else:
+                detail = output or "unknown error"
                 store.mark_failed(item.id, pname)
-                results[pname] = {"status": "failed", "detail": output or "unknown error"}
+                results[pname] = {"status": "failed", "detail": detail}
+                _elog.error("[%s] %s — %s", pname, filename, detail)
         except Exception as e:
             results[pname] = {"status": "error", "detail": str(e)}
+            _elog.error("[%s] %s — %s", pname, filename, e)
 
     return jsonify(results)
 
@@ -1393,7 +1635,7 @@ def sources_page():
 @app.route("/api/sources", methods=["GET"])
 @login_required
 def api_sources_list():
-    return jsonify(_source_store.list_all())
+    return jsonify(_get_source_store().list_all())
 
 
 @app.route("/api/sources", methods=["POST"])
@@ -1406,7 +1648,7 @@ def api_sources_create():
     schedule = data.get("schedule")
     if not name or not type_:
         return jsonify({"error": "name and type required"}), 400
-    source = _source_store.add(name, type_, config, schedule)
+    source = _get_source_store().add(name, type_, config, schedule)
     return jsonify({"ok": True, "source": source})
 
 
@@ -1418,36 +1660,36 @@ def api_sources_update(source_id):
     for k in ("name", "config", "enabled", "schedule"):
         if k in data:
             fields[k] = data[k]
-    _source_store.update(source_id, **fields)
-    return jsonify({"ok": True, "source": _source_store.get(source_id)})
+    _get_source_store().update(source_id, **fields)
+    return jsonify({"ok": True, "source": _get_source_store().get(source_id)})
 
 
 @app.route("/api/sources/<source_id>", methods=["DELETE"])
 @not_reviewer
 def api_sources_delete(source_id):
-    _source_store.delete(source_id)
+    _get_source_store().delete(source_id)
     return jsonify({"ok": True})
 
 
 @app.route("/api/sources/<source_id>/pull", methods=["POST"])
 @not_reviewer
 def api_sources_pull(source_id):
-    source = _source_store.get(source_id)
+    source = _get_source_store().get(source_id)
     if not source:
         return jsonify({"error": "Source not found"}), 404
     try:
-        added = _pull_engine.pull(source)
-        _source_store.log_pull(source_id, len(added))
+        added = _get_pull_engine().pull(source)
+        _get_source_store().log_pull(source_id, len(added))
         return jsonify({"ok": True, "added": len(added), "files": added})
     except Exception as e:
-        _source_store.log_pull(source_id, 0, status="error", error=str(e))
+        _get_source_store().log_pull(source_id, 0, status="error", error=str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/sources/<source_id>/log")
 @login_required
 def api_sources_log(source_id):
-    return jsonify(_source_store.recent_log(source_id))
+    return jsonify(_get_source_store().recent_log(source_id))
 
 
 @app.route("/calendar")
@@ -1469,7 +1711,7 @@ def api_schedule_create():
     if not filename or not platforms or not scheduled_at:
         return jsonify({"error": "filename, platforms and scheduled_at required"}), 400
 
-    image_path = QUEUE_DIR / filename
+    image_path = _get_queue_dir() / filename
     if not image_path.exists():
         return jsonify({"error": "File not found"}), 404
 
@@ -1482,27 +1724,26 @@ def api_schedule_create():
     except ValueError:
         return jsonify({"error": "Invalid date/time format"}), 400
 
-    post_id = _sched_store.add(filename, captions, platforms, platform_options, scheduled_at)
+    post_id = _get_sched_store().add(filename, captions, platforms, platform_options, scheduled_at)
     return jsonify({"ok": True, "id": post_id})
 
 
 @app.route("/api/schedule", methods=["GET"])
 @login_required
 def api_schedule_list():
-    posts = _sched_store.list_all()
+    posts = _get_sched_store().list_all()
     return jsonify(posts)
 
 
 @app.route("/api/schedule/<post_id>", methods=["DELETE"])
 @login_required
 def api_schedule_delete(post_id):
-    _sched_store.delete(post_id)
+    _get_sched_store().delete(post_id)
     return jsonify({"ok": True})
 
 
 # ── Default schedule config ────────────────────────────────────────────────
 
-_DEFAULT_SCHED_FILE = DATA_DIR / "default_schedule.json"
 _DEFAULT_SCHED = {
     "enabled": False,
     "days_of_week": [0, 1, 2, 3, 4, 5, 6],   # 0=Mon … 6=Sun
@@ -1513,17 +1754,28 @@ _DEFAULT_SCHED = {
 }
 
 
+def _get_default_sched_file() -> Path:
+    b = _get_active_brand()
+    if not b:
+        abort(409, "No active brand selected")
+    f = _brand_dir_for(b["id"]) / "default_schedule.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    return f
+
+
 def _load_default_sched() -> dict:
-    if _DEFAULT_SCHED_FILE.exists():
+    f = _get_default_sched_file()
+    if f.exists():
         try:
-            return {**_DEFAULT_SCHED, **json.loads(_DEFAULT_SCHED_FILE.read_text())}
+            return {**_DEFAULT_SCHED, **json.loads(f.read_text())}
         except Exception:
             pass
     return dict(_DEFAULT_SCHED)
 
 
 def _save_default_sched(cfg: dict):
-    _DEFAULT_SCHED_FILE.write_text(json.dumps(cfg, indent=2))
+    f = _get_default_sched_file()
+    f.write_text(json.dumps(cfg, indent=2))
 
 
 @app.route("/api/schedule/default", methods=["GET"])
@@ -1564,11 +1816,11 @@ def api_schedule_generate():
         return jsonify({"error": "Select at least one platform in Default Schedule"}), 400
 
     # Collect already-scheduled filenames so we don't double-schedule
-    existing = {p["filename"] for p in _sched_store.list_all(status="pending")}
+    existing = {p["filename"] for p in _get_sched_store().list_all(status="pending")}
 
     # Queue items not yet scheduled, oldest first
     queue_items = [
-        f.name for f in sorted(QUEUE_DIR.iterdir(), key=lambda x: x.stat().st_mtime)
+        f.name for f in sorted(_get_queue_dir().iterdir(), key=lambda x: x.stat().st_mtime)
         if f.is_file() and f.suffix.lower() in QUEUE_EXTENSIONS
         and f.name not in existing
     ]
@@ -1590,7 +1842,7 @@ def api_schedule_generate():
                 slots.append(slot_dt)
 
     # Check which slots already have a post
-    pending = _sched_store.list_all(status="pending")
+    pending = _get_sched_store().list_all(status="pending")
     occupied = {p["scheduled_at"][:16] for p in pending}   # "YYYY-MM-DDTHH:MM"
     free_slots = [s for s in slots if s.strftime("%Y-%m-%dT%H:%M") not in occupied]
 
@@ -1598,7 +1850,7 @@ def api_schedule_generate():
     count = 0
     for slot_dt, filename in zip(free_slots, queue_items):
         captions = {p: Path(filename).stem.replace("_", " ") for p in platforms}
-        _sched_store.add(
+        _get_sched_store().add(
             filename=filename,
             captions=captions,
             platforms=platforms,
@@ -1613,15 +1865,39 @@ def api_schedule_generate():
 
 if __name__ == "__main__":
     import webbrowser, threading
+    from brands import migrate_famjam
+
+    # ── Ensure users exist ───────────────────────────────────────────────────
+    if not _user_store.get("goldengate"):
+        _user_store.create("goldengate", "goldengate", "admin")
+        print("  [setup] Created admin: goldengate (change password on first login)")
+    else:
+        _user_store.update_role("goldengate", "admin")
+
+    if not _user_store.get("zstaikova"):
+        _user_store.create("zstaikova", "zstaikova", "user")
+        print("  [setup] Created user: zstaikova (change password on first login)")
+
+    # ── Run brand migration (no-op if already done) ──────────────────────────
+    migrate_famjam(
+        brand_store=_brand_store,
+        data_dir=DATA_DIR,
+        famjam_dir=ROOT / "famjammemes",
+        root_accounts_enc=DATA_DIR / "accounts.enc",
+    )
+
     print()
-    print("  FamJam Socialline")
+    print("  Socialline")
     print("  https://socialline.space  (public)")
     print("  http://localhost:5000     (local)")
-    print(f"  Queue: {QUEUE_DIR}")
+    brands = _brand_store.list_all()
+    for b in brands:
+        print(f"  Brand: {b['name']} ({b['slug']}) → brands/{b['id']}/")
     print()
-    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
-    (ROOT / "famjammemes").mkdir(parents=True, exist_ok=True)
-    start_scheduler(_sched_store, QUEUE_DIR)
-    start_source_puller(_source_store, _pull_engine, _sched_store, QUEUE_DIR, _load_default_sched)
+
+    # ── Background threads ──────────────────────────────────────────────────
+    start_scheduler(_all_brand_scheduler_data)
+    start_source_puller(_all_brand_puller_data)
+
     threading.Timer(1.0, lambda: webbrowser.open("https://socialline.space")).start()
     app.run(debug=False, port=5000)

@@ -1,11 +1,32 @@
+import io
 import os
 import requests
 from datetime import datetime
+from pathlib import Path
+from PIL import Image
 
 from pipeline.core.base_publisher import BasePublisher
 from pipeline.core.content_item import ContentItem
 
-GRAPH_URL = "https://graph.facebook.com/v19.0"
+GRAPH_URL    = "https://graph.facebook.com/v19.0"
+MAX_BYTES    = 4 * 1024 * 1024   # Facebook /photos multipart limit
+
+
+def _compress_image(path: Path) -> tuple[bytes, str]:
+    """Return (jpeg_bytes, mime_type) compressed to under MAX_BYTES."""
+    img = Image.open(path).convert("RGB")
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= MAX_BYTES:
+            return data, "image/jpeg"
+    # Last resort: halve dimensions
+    w, h = img.size
+    img = img.resize((w // 2, h // 2), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=55, optimize=True)
+    return buf.getvalue(), "image/jpeg"
 
 
 class FacebookPublisher(BasePublisher):
@@ -39,18 +60,27 @@ class FacebookPublisher(BasePublisher):
             return False
 
         caption = self._build_caption(item)
+        path    = item.media_path
+        size    = path.stat().st_size
 
         try:
-            with open(item.media_path, "rb") as f:
-                resp = requests.post(
-                    f"{GRAPH_URL}/{self.page_id}/photos",
-                    data={
-                        "caption": caption,
-                        "access_token": self.access_token,
-                    },
-                    files={"source": f},
-                    timeout=30,
-                )
+            if size > MAX_BYTES:
+                print(f"  Facebook: image {size // 1024}KB > 4MB limit — compressing")
+                img_bytes, mime = _compress_image(path)
+                files = {"source": (path.name, img_bytes, mime)}
+            else:
+                files = {"source": open(path, "rb")}
+
+            resp = requests.post(
+                f"{GRAPH_URL}/{self.page_id}/photos",
+                data={"caption": caption, "access_token": self.access_token},
+                files=files,
+                timeout=60,
+            )
+
+            # Close the raw file handle if we opened one
+            if hasattr(files["source"], "close"):
+                files["source"].close()
 
             if resp.ok:
                 data = resp.json()
