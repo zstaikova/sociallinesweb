@@ -448,6 +448,129 @@ SETUP_PLATFORMS = [
         "auth_script": None,
         "verify_cmd": "x",
     },
+
+    # ── Content Platforms ────────────────────────────────────────────────────
+    {
+        "id": "substack", "name": "Substack", "icon": "bi-envelope-open-heart", "color": "#ff6719",
+        "note": "Publish newsletter posts with cover images",
+        "section": "social",
+        "type": "manual",
+        "keys_required": ["SUBSTACK_SESSION_TOKEN", "SUBSTACK_PUBLICATION"],
+        "form_fields": [
+            {"key": "SUBSTACK_PUBLICATION", "label": "Publication name",
+             "placeholder": "yourpublication",
+             "help": "The subdomain of your Substack (yourpublication.substack.com — enter just 'yourpublication')"},
+            {"key": "SUBSTACK_SESSION_TOKEN", "label": "Session token", "type": "password",
+             "help": "Log into Substack in a browser → DevTools (F12) → Application → Cookies → copy the value of 'connect.sid'"},
+        ],
+        "steps": [
+            ("Log into your Substack account in a browser", ""),
+            ("Open DevTools (F12) → Application tab → Cookies → substack.com", ""),
+            ("Find 'connect.sid' and copy its Value", ""),
+            ("Enter your publication subdomain and paste the token below", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "substack",
+    },
+
+    # ── Selling Platforms ────────────────────────────────────────────────────
+    {
+        "id": "etsy", "name": "Etsy", "icon": "bi-shop", "color": "#f56400",
+        "note": "Create product listings with images (draft mode)",
+        "section": "selling",
+        "type": "oauth",
+        "keys_required": ["ETSY_ACCESS_TOKEN"],
+        "prereq_fields": [
+            {"key": "ETSY_API_KEY",   "label": "API Key (Keystring)",
+             "help": "From your Etsy app at etsy.com/developers"},
+            {"key": "ETSY_SHOP_ID",   "label": "Shop ID",
+             "help": "Numeric ID from your Etsy shop URL (etsy.com/shop/YourShop — check your browser for the ID)"},
+            {"key": "ETSY_DEFAULT_PRICE",       "label": "Default listing price (USD)", "placeholder": "9.99"},
+            {"key": "ETSY_DEFAULT_TAXONOMY_ID", "label": "Category ID", "placeholder": "2078",
+             "help": "Category taxonomy ID — 2078 = Photography. Browse categories at openapi.etsy.com/v3/application/seller-taxonomy/nodes"},
+        ],
+        "steps": [
+            ("Go to", "https://www.etsy.com/developers/register → Register an app"),
+            ("Set callback URL to", "https://app.socialline.space/callback"),
+            ("Enter your API Key, Shop ID, and defaults above, then click Connect", ""),
+            ("Listings are created as drafts — review and publish from your Etsy dashboard", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "etsy",
+    },
+    {
+        "id": "lemonsqueezy", "name": "Lemon Squeezy", "icon": "bi-currency-dollar", "color": "#ffd000",
+        "note": "View products and store — read-only connection",
+        "section": "selling",
+        "type": "manual",
+        "keys_required": ["LEMONSQUEEZY_API_KEY"],
+        "form_fields": [
+            {"key": "LEMONSQUEEZY_API_KEY", "label": "API Key", "type": "password",
+             "help": "Generate at app.lemonsqueezy.com → Settings → API"},
+        ],
+        "steps": [
+            ("Go to", "https://app.lemonsqueezy.com/settings/api"),
+            ("Click 'Add API key', name it and copy the value", ""),
+            ("Paste it below — product creation must be done in the dashboard", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "lemonsqueezy",
+    },
+    {
+        "id": "gumroad", "name": "Gumroad", "icon": "bi-bag-heart", "color": "#ff90e8",
+        "note": "View products and sales — read-only connection",
+        "section": "selling",
+        "type": "manual",
+        "keys_required": ["GUMROAD_ACCESS_TOKEN"],
+        "form_fields": [
+            {"key": "GUMROAD_ACCESS_TOKEN", "label": "Access token", "type": "password",
+             "help": "Go to app.gumroad.com/api → generate an access token"},
+        ],
+        "steps": [
+            ("Go to", "https://app.gumroad.com/api"),
+            ("Click 'Generate access token' and copy it", ""),
+            ("Paste it below", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "gumroad",
+    },
+    {
+        "id": "teachable", "name": "Teachable", "icon": "bi-mortarboard", "color": "#00b3a4",
+        "note": "View courses — read-only connection (Pro plan required)",
+        "section": "selling",
+        "type": "manual",
+        "keys_required": ["TEACHABLE_API_KEY"],
+        "form_fields": [
+            {"key": "TEACHABLE_API_KEY", "label": "API Key", "type": "password",
+             "help": "Go to your school admin → Settings → Integrations → API"},
+        ],
+        "steps": [
+            ("Go to your Teachable school admin → Settings → Integrations", ""),
+            ("Copy your API key", ""),
+            ("Paste it below (requires Pro plan or higher)", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "teachable",
+    },
+    {
+        "id": "udemy", "name": "Udemy", "icon": "bi-play-circle", "color": "#a435f0",
+        "note": "View courses and revenue — read-only connection",
+        "section": "selling",
+        "type": "manual",
+        "keys_required": ["UDEMY_BEARER_TOKEN"],
+        "form_fields": [
+            {"key": "UDEMY_BEARER_TOKEN", "label": "Bearer token", "type": "password",
+             "help": "Go to udemy.com → Profile → API Clients → create a client → copy the Bearer Token"},
+        ],
+        "steps": [
+            ("Go to", "https://www.udemy.com/user/edit-profile/"),
+            ("Scroll to API Clients → Create a new client", ""),
+            ("Copy the Bearer Token value", ""),
+            ("Paste it below", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "udemy",
+    },
 ]
 
 _oauth_processes      = {}  # platform_id → subprocess
@@ -1048,7 +1171,8 @@ def accounts_page():
         active = acct.get_active(p["id"])
         platforms.append({
             **p,
-            "configured": bool(acct.get_active(p["id"])) or _platform_status_env_only(p),
+            "section":      p.get("section", "social"),
+            "configured":   bool(acct.get_active(p["id"])) or _platform_status_env_only(p),
             "account_name": active.account_name if active else None,
         })
     return render_template("setup.html", platforms=platforms)
@@ -1130,6 +1254,11 @@ def oauth_web_callback():
                     _youtube_exchange_and_save(code)
                 except Exception as e:
                     _web_oauth[matched]["exchange_error"] = str(e)
+            elif code and matched == "etsy":
+                try:
+                    _etsy_exchange_and_save(code)
+                except Exception as e:
+                    _web_oauth[matched]["exchange_error"] = str(e)
 
     return """<!doctype html><html><body style='font-family:sans-serif;text-align:center;padding:4rem'>
         <h2 style='color:#7C3AED'>&#10003; Authorized!</h2>
@@ -1208,6 +1337,32 @@ def _threads_exchange_and_save(code: str):
     load_dotenv(ENV_FILE, override=True)
 
 
+def _etsy_exchange_and_save(code: str):
+    import requests as _req
+    api_key   = os.getenv("ETSY_API_KEY") or ""
+    verifier  = (_web_oauth.get("etsy") or {}).get("code_verifier", "")
+    redirect  = "https://app.socialline.space/callback"
+    resp = _req.post("https://api.etsy.com/v3/public/oauth/token", data={
+        "grant_type":    "authorization_code",
+        "client_id":     api_key,
+        "redirect_uri":  redirect,
+        "code":          code,
+        "code_verifier": verifier,
+    }, timeout=15)
+    resp.raise_for_status()
+    tokens        = resp.json()
+    access_token  = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    if not access_token:
+        raise ValueError("No access token returned from Etsy")
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text("")
+    set_key(str(ENV_FILE), "ETSY_ACCESS_TOKEN",  access_token)
+    if refresh_token:
+        set_key(str(ENV_FILE), "ETSY_REFRESH_TOKEN", refresh_token)
+    load_dotenv(ENV_FILE, override=True)
+
+
 @app.route("/api/accounts/launch-oauth/<platform_id>", methods=["POST"])
 @login_required
 def api_setup_launch_oauth(platform_id):
@@ -1276,6 +1431,32 @@ def api_setup_launch_oauth(platform_id):
         _oauth_account_counts[platform_id] = len(_get_acct_store().list_all(platform_id))
         return jsonify({"ok": True, "auth_url": auth_url,
             "message": "Authorize in the browser window, then click below."})
+
+    if platform_id == "etsy":
+        import secrets as _sec, hashlib as _hash, base64 as _b64
+        api_key = os.getenv("ETSY_API_KEY") or ""
+        if not api_key:
+            return jsonify({"error": "Enter and save your Etsy API Key first"}), 400
+        # PKCE
+        verifier  = _sec.token_urlsafe(43)
+        digest    = _hash.sha256(verifier.encode()).digest()
+        challenge = _b64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        state     = _sec.token_urlsafe(16)
+        redirect  = "https://app.socialline.space/callback"
+        params    = urlencode({
+            "response_type":         "code",
+            "redirect_uri":          redirect,
+            "scope":                 "listings_w listings_r shops_r",
+            "client_id":             api_key,
+            "state":                 state,
+            "code_challenge":        challenge,
+            "code_challenge_method": "S256",
+        })
+        auth_url = f"https://www.etsy.com/oauth/connect?{params}"
+        _web_oauth["etsy"] = {"state": state, "done": False, "code_verifier": verifier}
+        _oauth_account_counts["etsy"] = len(_get_acct_store().list_all("etsy"))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Authorize in the browser window — your Etsy listing access will be connected."})
 
     p = next((x for x in SETUP_PLATFORMS if x["id"] == platform_id), None)
     if not p or not p.get("auth_script"):
@@ -1460,16 +1641,23 @@ def api_setup_verify(platform_id):
 def _make_publisher(platform_id: str, credentials: dict = None):
     """Instantiate a publisher for the given platform."""
     mapping = {
-        "facebook":  ("pipeline.platforms.facebook.publisher",  "FacebookPublisher"),
-        "instagram": ("pipeline.platforms.instagram.publisher", "InstagramPublisher"),
-        "threads":   ("pipeline.platforms.threads.publisher",   "ThreadsPublisher"),
-        "x":         ("pipeline.platforms.x.publisher",         "XPublisher"),
-        "tiktok":    ("pipeline.platforms.tiktok.publisher",    "TikTokPublisher"),
-        "bluesky":   ("pipeline.platforms.bluesky.publisher",   "BlueskyPublisher"),
-        "linkedin":  ("pipeline.platforms.linkedin.publisher",  "LinkedInPublisher"),
-        "pinterest": ("pipeline.platforms.pinterest.publisher", "PinterestPublisher"),
-        "youtube":   ("pipeline.platforms.youtube.publisher",   "YouTubePublisher"),
-        "telegram":  ("pipeline.platforms.telegram.publisher",  "TelegramPublisher"),
+        "facebook":     ("pipeline.platforms.facebook.publisher",     "FacebookPublisher"),
+        "instagram":    ("pipeline.platforms.instagram.publisher",    "InstagramPublisher"),
+        "threads":      ("pipeline.platforms.threads.publisher",      "ThreadsPublisher"),
+        "x":            ("pipeline.platforms.x.publisher",            "XPublisher"),
+        "tiktok":       ("pipeline.platforms.tiktok.publisher",       "TikTokPublisher"),
+        "bluesky":      ("pipeline.platforms.bluesky.publisher",      "BlueskyPublisher"),
+        "linkedin":     ("pipeline.platforms.linkedin.publisher",     "LinkedInPublisher"),
+        "pinterest":    ("pipeline.platforms.pinterest.publisher",    "PinterestPublisher"),
+        "youtube":      ("pipeline.platforms.youtube.publisher",      "YouTubePublisher"),
+        "telegram":     ("pipeline.platforms.telegram.publisher",     "TelegramPublisher"),
+        # New platforms
+        "substack":     ("pipeline.platforms.substack.publisher",     "SubstackPublisher"),
+        "etsy":         ("pipeline.platforms.etsy.publisher",         "EtsyPublisher"),
+        "lemonsqueezy": ("pipeline.platforms.lemonsqueezy.publisher", "LemonSqueezyPublisher"),
+        "gumroad":      ("pipeline.platforms.gumroad.publisher",      "GumroadPublisher"),
+        "teachable":    ("pipeline.platforms.teachable.publisher",    "TeachablePublisher"),
+        "udemy":        ("pipeline.platforms.udemy.publisher",        "UdemyPublisher"),
     }
     if platform_id not in mapping:
         return None
@@ -1583,6 +1771,12 @@ _USER_TOKEN_KEYS: dict[str, list[str]] = {
     "x":         ["X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET",
                   "X_CONSUMER_KEY", "X_CONSUMER_SECRET"],
     "tiktok":    ["TIKTOK_ACCESS_TOKEN", "TIKTOK_OPEN_ID", "TIKTOK_REFRESH_TOKEN"],
+    "substack":     ["SUBSTACK_SESSION_TOKEN", "SUBSTACK_PUBLICATION"],
+    "etsy":         ["ETSY_ACCESS_TOKEN", "ETSY_REFRESH_TOKEN"],
+    "lemonsqueezy": ["LEMONSQUEEZY_API_KEY"],
+    "gumroad":      ["GUMROAD_ACCESS_TOKEN"],
+    "teachable":    ["TEACHABLE_API_KEY"],
+    "udemy":        ["UDEMY_BEARER_TOKEN"],
     "bluesky":   ["BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"],
     "linkedin":  ["LINKEDIN_ACCESS_TOKEN", "LINKEDIN_PERSON_URN"],
     "pinterest": ["PINTEREST_ACCESS_TOKEN", "PINTEREST_BOARD_ID"],

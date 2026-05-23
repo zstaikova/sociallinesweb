@@ -73,6 +73,15 @@ PLATFORM_ENV_KEYS: dict[str, list[str]] = {
     "youtube":   ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
                   "YOUTUBE_ACCESS_TOKEN", "YOUTUBE_REFRESH_TOKEN"],
     "telegram":  ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
+    # Content platforms
+    "substack":     ["SUBSTACK_SESSION_TOKEN", "SUBSTACK_PUBLICATION"],
+    # Selling platforms
+    "etsy":         ["ETSY_API_KEY", "ETSY_ACCESS_TOKEN", "ETSY_SHOP_ID",
+                     "ETSY_DEFAULT_PRICE", "ETSY_DEFAULT_TAXONOMY_ID"],
+    "lemonsqueezy": ["LEMONSQUEEZY_API_KEY"],
+    "gumroad":      ["GUMROAD_ACCESS_TOKEN"],
+    "teachable":    ["TEACHABLE_API_KEY"],
+    "udemy":        ["UDEMY_BEARER_TOKEN"],
 }
 
 

@@ -107,4 +107,12 @@ def create_pipeline(platforms: list, store: ContentStore = None,
             transformers=[remotion_for("youtube", brand_name=BRAND_NAME)],
         ))
 
+    if "substack" in platforms and _has_creds("substack"):
+        from pipeline.platforms.substack.publisher import SubstackPublisher
+        platform_configs.append(PlatformConfig(publisher=SubstackPublisher(_creds("substack"))))
+
+    if "etsy" in platforms and _has_creds("etsy"):
+        from pipeline.platforms.etsy.publisher import EtsyPublisher
+        platform_configs.append(PlatformConfig(publisher=EtsyPublisher(_creds("etsy"))))
+
     return Pipeline(source, shared_transformers, platform_configs, store)
