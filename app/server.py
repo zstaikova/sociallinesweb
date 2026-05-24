@@ -571,6 +571,40 @@ SETUP_PLATFORMS = [
         "auth_script": None,
         "verify_cmd": "udemy",
     },
+
+    # ── Browser Automation Platforms ────────────────────────────────────────
+    {
+        "id": "medium", "name": "Medium", "icon": "bi-medium", "color": "#000000",
+        "note": "Browser-assisted — fills draft, you click Publish. 3 posts/week.",
+        "section": "browser",
+        "type": "browser",
+        "keys_required": [],
+    },
+    {
+        "id": "quora", "name": "Quora", "icon": "bi-question-circle", "color": "#b92b27",
+        "note": "Browser-assisted — answers questions. 1 post/day. Provide question URL.",
+        "section": "browser",
+        "type": "browser",
+        "keys_required": [],
+        "form_fields": [
+            {"key": "QUORA_QUESTION_URL", "label": "Default question URL",
+             "help": "Optional — the Quora question URL to answer by default"},
+        ],
+    },
+    {
+        "id": "tpt", "name": "Teachers Pay Teachers", "icon": "bi-book", "color": "#ee4266",
+        "note": "Browser-assisted — fills product form, you complete and submit. 5 posts/week.",
+        "section": "browser",
+        "type": "browser",
+        "keys_required": [],
+    },
+    {
+        "id": "substack_notes", "name": "Substack Notes", "icon": "bi-sticky", "color": "#ff6719",
+        "note": "Browser-assisted — short notes on Substack's social feed. 3 posts/day.",
+        "section": "browser",
+        "type": "browser",
+        "keys_required": [],
+    },
 ]
 
 _oauth_processes      = {}  # platform_id → subprocess
@@ -1658,6 +1692,11 @@ def _make_publisher(platform_id: str, credentials: dict = None):
         "gumroad":      ("pipeline.platforms.gumroad.publisher",      "GumroadPublisher"),
         "teachable":    ("pipeline.platforms.teachable.publisher",    "TeachablePublisher"),
         "udemy":        ("pipeline.platforms.udemy.publisher",        "UdemyPublisher"),
+        # Browser automation
+        "medium":         ("pipeline.browser.connectors.medium",         "MediumConnector"),
+        "quora":          ("pipeline.browser.connectors.quora",          "QuoraConnector"),
+        "tpt":            ("pipeline.browser.connectors.tpt",            "TPTConnector"),
+        "substack_notes": ("pipeline.browser.connectors.substack_notes", "SubstackNotesConnector"),
     }
     if platform_id not in mapping:
         return None
@@ -1739,6 +1778,77 @@ def api_tiktok_status(publish_id):
         return jsonify({"status": status})
     except Exception as e:
         return jsonify({"status": "ERROR", "message": str(e)})
+
+
+# ── Browser automation endpoints ──────────────────────────────────────────────
+
+_browser_login_status: dict[str, dict] = {}  # platform_id → {running, done, error}
+
+
+@app.route("/api/accounts/browser-login/<platform_id>", methods=["POST"])
+@login_required
+def api_browser_login_start(platform_id):
+    """Start a headed browser session so the user can log in manually."""
+    from pipeline.browser.sessions import BrowserSessionStore
+    connector = _make_publisher(platform_id, {})
+    if connector is None or not hasattr(connector, "first_login"):
+        return jsonify({"error": "Not a browser platform"}), 400
+
+    if _browser_login_status.get(platform_id, {}).get("running"):
+        return jsonify({"ok": True, "message": "Browser login already in progress"})
+
+    _browser_login_status[platform_id] = {"running": True, "done": False, "error": None}
+
+    def _run():
+        try:
+            connector.first_login()
+            _browser_login_status[platform_id] = {"running": False, "done": True, "error": None}
+        except Exception as e:
+            _browser_login_status[platform_id] = {"running": False, "done": False, "error": str(e)}
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "message": "Browser opened — log in and it will save automatically"})
+
+
+@app.route("/api/accounts/browser-login/<platform_id>/status")
+@login_required
+def api_browser_login_status(platform_id):
+    from pipeline.browser.sessions import BrowserSessionStore
+    status = _browser_login_status.get(platform_id, {"running": False, "done": False, "error": None})
+    has_session = BrowserSessionStore().exists(platform_id)
+    return jsonify({**status, "has_session": has_session})
+
+
+@app.route("/api/accounts/browser-login/<platform_id>", methods=["DELETE"])
+@login_required
+def api_browser_session_clear(platform_id):
+    """Clear a saved browser session (force re-login)."""
+    from pipeline.browser.sessions import BrowserSessionStore
+    BrowserSessionStore().delete(platform_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/browser/policy")
+@login_required
+def api_browser_policy():
+    from pipeline.browser.policy import SafePolicy
+    return jsonify(SafePolicy().all_status())
+
+
+@app.route("/api/browser/policy/<platform_id>/kill", methods=["POST"])
+@admin_required
+def api_browser_policy_kill(platform_id):
+    from pipeline.browser.policy import SafePolicy
+    SafePolicy().kill(platform_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/browser/policy/<platform_id>/unkill", methods=["POST"])
+@admin_required
+def api_browser_policy_unkill(platform_id):
+    from pipeline.browser.policy import SafePolicy
+    SafePolicy().unkill(platform_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/accounts")

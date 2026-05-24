@@ -74,8 +74,10 @@
   ("bluesky",   "Bluesky",   "#0085ff", "bi-cloud"),
   ("linkedin",  "LinkedIn",  "#0a66c2", "bi-linkedin"),
   ("pinterest", "Pinterest", "#e60023", "bi-pinterest"),
-  ("substack",  "Substack",  "#ff6719", "bi-envelope-open-heart"),
-  ("etsy",      "Etsy",      "#f56400", "bi-shop"),
+  ("substack",       "Substack",        "#ff6719", "bi-envelope-open-heart"),
+  ("etsy",           "Etsy",            "#f56400", "bi-shop"),
+  ("medium",         "Medium",          "#000000", "bi-medium"),
+  ("substack_notes", "Substack Notes",  "#ff6719", "bi-sticky"),
 ] %}
 
 {% if images %}
@@ -221,7 +223,7 @@
 
 {% block scripts %}
 <script>
-const PLATS_ALL = ['facebook','instagram','threads','x','tiktok','bluesky','linkedin','pinterest','substack','etsy'];
+const PLATS_ALL = ['facebook','instagram','threads','x','tiktok','bluesky','linkedin','pinterest','substack','etsy','medium','substack_notes'];
 
 // Show accounts banner if no platforms have credentials
 (async () => {

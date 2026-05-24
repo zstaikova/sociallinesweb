@@ -9,3 +9,4 @@ beautifulsoup4>=4.12
 atproto>=0.0.50
 cryptography>=42.0
 keyring>=25.0
+playwright>=1.44

@@ -23,6 +23,18 @@
            style="font-size:.75rem;color:#9ca3af;transition:transform .2s;flex-shrink:0;"></i>
       </div>
       <div id="pbody-{{ p.id }}" style="display:none;margin-top:10px;">
+        {% if p.type == 'browser' %}
+        <!-- Browser platform — session-based, not account-store -->
+        <div id="accts-{{ p.id }}" class="mb-2"></div>
+        <button class="btn btn-sm btn-primary w-100" id="login-btn-{{ p.id }}"
+                onclick="browserLogin('{{ p.id }}')">
+          <i class="bi bi-browser-chrome me-1"></i>Login via Browser
+        </button>
+        <button class="btn btn-sm btn-outline-danger w-100 mt-1" style="display:none;" id="clear-btn-{{ p.id }}"
+                onclick="browserClearSession('{{ p.id }}')">
+          <i class="bi bi-trash me-1"></i>Clear Session
+        </button>
+        {% else %}
         <div id="accts-{{ p.id }}" class="mb-2"></div>
         <a href="{{ url_for('accounts_platform', platform_id=p.id) }}"
            class="btn btn-sm w-100 {% if p.configured %}btn-outline-secondary{% else %}btn-primary{% endif %}">
@@ -32,6 +44,7 @@
             <i class="bi bi-box-arrow-in-right me-1"></i>Connect
           {% endif %}
         </a>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -52,8 +65,22 @@
 <div class="mb-2 fw-semibold text-muted small text-uppercase" style="letter-spacing:.05em;">
   <i class="bi bi-bag me-1"></i>Selling Platforms
 </div>
-<div class="row g-3" id="platforms-grid-selling">
+<div class="row g-3 mb-5" id="platforms-grid-selling">
   {% for p in platforms if p.section == 'selling' %}
+  {{ platform_card(p) }}
+  {% endfor %}
+</div>
+
+<!-- Browser Automation -->
+<div class="mb-2 fw-semibold text-muted small text-uppercase" style="letter-spacing:.05em;">
+  <i class="bi bi-browser-chrome me-1"></i>Browser Automation
+</div>
+<div class="small text-muted mb-3">
+  These platforms use a real browser. You log in once — Socialline saves the session.
+  When posting, the browser opens, fills in the form, and waits for you to review and submit.
+</div>
+<div class="row g-3" id="platforms-grid-browser">
+  {% for p in platforms if p.section == 'browser' %}
   {{ platform_card(p) }}
   {% endfor %}
 </div>
@@ -66,7 +93,8 @@
 .platform-card-header:hover .bi-chevron-down { color: #4361ee !important; }
 </style>
 <script>
-const platformIds = {{ platforms | map(attribute='id') | list | tojson }};
+const platformIds     = {{ platforms | map(attribute='id') | list | tojson }};
+const browserPlatformIds = {{ platforms | selectattr('type','equalto','browser') | map(attribute='id') | list | tojson }};
 
 function togglePlatformCard(pid) {
   const body    = document.getElementById('pbody-' + pid);
@@ -76,11 +104,12 @@ function togglePlatformCard(pid) {
   chevron.style.transform = isOpen ? '' : 'rotate(180deg)';
 }
 
+// ── Regular (API-token / OAuth) accounts ────────────────────────────────────
+
 async function loadAllAccounts() {
   const res  = await fetch('/api/accounts');
   const list = await res.json();
 
-  // Group by platform
   const byPlatform = {};
   list.forEach(a => {
     if (!byPlatform[a.platform]) byPlatform[a.platform] = [];
@@ -88,12 +117,12 @@ async function loadAllAccounts() {
   });
 
   platformIds.forEach(pid => {
+    if (browserPlatformIds.includes(pid)) return;  // handled separately
     const container   = document.getElementById('accts-' + pid);
     const statusBadge = document.getElementById('pstatus-' + pid);
     if (!container) return;
     const accounts = byPlatform[pid] || [];
 
-    // Update status badge in header
     if (statusBadge) {
       if (accounts.length) {
         const name = accounts.find(a => a.active)?.account_name || accounts[0].account_name;
@@ -137,6 +166,72 @@ async function logOut(id, name, pid) {
   loadAllAccounts();
 }
 
+// ── Browser automation accounts ─────────────────────────────────────────────
+
+async function loadBrowserSessions() {
+  for (const pid of browserPlatformIds) {
+    const res = await fetch('/api/accounts/browser-login/' + pid + '/status');
+    const s   = await res.json();
+    updateBrowserCard(pid, s);
+  }
+}
+
+function updateBrowserCard(pid, s) {
+  const container  = document.getElementById('accts-' + pid);
+  const statusBadge = document.getElementById('pstatus-' + pid);
+  const loginBtn   = document.getElementById('login-btn-' + pid);
+  const clearBtn   = document.getElementById('clear-btn-' + pid);
+
+  if (statusBadge) {
+    if (s.running) {
+      statusBadge.textContent = 'Opening browser…';
+      statusBadge.className   = 'badge border bg-warning-subtle text-warning border-warning-subtle';
+    } else if (s.has_session) {
+      statusBadge.textContent = 'Session saved';
+      statusBadge.className   = 'badge border bg-success-subtle text-success border-success-subtle';
+    } else {
+      statusBadge.textContent = 'Not logged in';
+      statusBadge.className   = 'badge border bg-secondary-subtle text-secondary border-secondary-subtle';
+    }
+    statusBadge.style.fontSize = '.6rem';
+  }
+
+  if (container) {
+    if (s.running) {
+      container.innerHTML = '<div class="text-muted small py-1"><span class="spinner-border spinner-border-sm me-1"></span>Browser open — log in and close when done</div>';
+    } else if (s.has_session) {
+      container.innerHTML = '<div class="small py-1"><i class="bi bi-check-circle-fill text-success me-1" style="font-size:.8rem;"></i>Browser session active</div>';
+    } else if (s.error) {
+      container.innerHTML = `<div class="text-danger small py-1">Error: ${s.error}</div>`;
+    } else {
+      container.innerHTML = '<div class="text-muted small py-1">No session — click Login to get started</div>';
+    }
+  }
+
+  if (loginBtn) loginBtn.style.display = s.running ? 'none' : '';
+  if (clearBtn) clearBtn.style.display = s.has_session && !s.running ? '' : 'none';
+}
+
+async function browserLogin(pid) {
+  const loginBtn = document.getElementById('login-btn-' + pid);
+  if (loginBtn) loginBtn.disabled = true;
+  await fetch('/api/accounts/browser-login/' + pid, {method: 'POST'});
+  // Poll until done
+  const poll = setInterval(async () => {
+    const res = await fetch('/api/accounts/browser-login/' + pid + '/status');
+    const s   = await res.json();
+    updateBrowserCard(pid, s);
+    if (!s.running) clearInterval(poll);
+  }, 2000);
+}
+
+async function browserClearSession(pid) {
+  if (!confirm('Clear the saved browser session for this platform? You will need to log in again.')) return;
+  await fetch('/api/accounts/browser-login/' + pid, {method: 'DELETE'});
+  loadBrowserSessions();
+}
+
 loadAllAccounts();
+loadBrowserSessions();
 </script>
 {% endblock %}
