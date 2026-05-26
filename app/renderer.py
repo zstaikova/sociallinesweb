@@ -152,7 +152,9 @@ class VideoRenderer:
 
         if visual_type == "stars_bg":
             bg_file = visual_config.get("background_file", "stars_bg.mp4")
-            bg_path = str(Path(self.remotion_project) / "public" / bg_file)
+            full_path = Path(self.remotion_project) / "public" / bg_file
+            # Only pass path if the file actually exists — Background renders gradient fallback when None
+            bg_path = str(full_path) if full_path.exists() else None
             return {"type": "stars_bg", "background": bg_path, "generated_images": []}
 
         if visual_type == "ai_generated" and self.comfyui_enabled:
@@ -165,9 +167,8 @@ class VideoRenderer:
             images = self._fetch_stock_images(query)
             return {"type": "stock", "background": None, "generated_images": images}
 
-        # Fallback
-        bg_path = str(Path(self.remotion_project) / "public" / "stars_bg.mp4")
-        return {"type": "stars_bg", "background": bg_path, "generated_images": []}
+        # Fallback — gradient only
+        return {"type": "stars_bg", "background": None, "generated_images": []}
 
     # ── Slides (Claude API) ───────────────────────────────────────────────────
 
@@ -208,14 +209,16 @@ STRICT RULES:
 6. For a 30-second video: use 4-6 slides
 7. Motion options: zoom_in_slow, zoom_out_slow, ken_burns_left_right, slide_up
 8. stat slides must have stat_number, stat_caption (source optional)
-9. teaching slides must have headline + at least 2 bullets
+9. teaching slides must have headline, bullet_1, bullet_2 (bullet_3 optional)
 10. quote slides must have quote_text (attribution optional)
-11. action slides must have label (ALL CAPS, max 4 words) + instruction"""
+11. action slides must have label (ALL CAPS, max 4 words) + instruction + optional sub_note"""
 
         example_slide = (
             '[{"id":"slide_001","type":"quote","duration_seconds":5,"motion":"zoom_in_slow",'
             '"quote_text":"Your hook here","attribution":null},'
-            '{"id":"slide_002","type":"action","duration_seconds":6,"motion":"slide_up",'
+            '{"id":"slide_002","type":"teaching","duration_seconds":9,"motion":"zoom_out_slow",'
+            '"headline":"Why It Works","bullet_1":"First reason","bullet_2":"Second reason","bullet_3":null},'
+            '{"id":"slide_003","type":"action","duration_seconds":6,"motion":"slide_up",'
             '"label":"FOLLOW FOR MORE","instruction":"Follow for one tip a day","sub_note":null}]'
         )
 
@@ -268,6 +271,14 @@ Return the JSON array now:"""
                         raw = raw[4:]
                 slides = json.loads(raw.strip())
 
+            # Normalize teaching slides: bullets[] → bullet_1/2/3
+            for s in slides:
+                if s.get("type") == "teaching" and "bullets" in s:
+                    blist = s.pop("bullets")
+                    s["bullet_1"] = blist[0] if len(blist) > 0 else ""
+                    s["bullet_2"] = blist[1] if len(blist) > 1 else ""
+                    s["bullet_3"] = blist[2] if len(blist) > 2 else None
+
             # Ensure total duration matches
             total = sum(s.get("duration_seconds", 0) for s in slides)
             if total != duration:
@@ -318,19 +329,37 @@ Return the JSON array now:"""
         master_path = output_dir / "master.mp4"
         props_path.write_text(json.dumps(props, indent=2))
 
-        result = subprocess.run(
-            [
-                "npx", "remotion", "render",
-                self.remotion_composition,
-                str(master_path),
-                f"--props={props_path}",
-                "--log=verbose",
-            ],
-            cwd=self.remotion_project,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        import sys
+        # On Windows, npx is a .cmd shim — must use shell=True or cmd /c
+        if sys.platform == "win32":
+            cmd = (
+                f'npx remotion render {self.remotion_composition}'
+                f' "{master_path}"'
+                f' "--props={props_path}"'
+                f' --log=verbose'
+            )
+            result = subprocess.run(
+                cmd,
+                cwd=self.remotion_project,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                shell=True,
+            )
+        else:
+            result = subprocess.run(
+                [
+                    "npx", "remotion", "render",
+                    self.remotion_composition,
+                    str(master_path),
+                    f"--props={props_path}",
+                    "--log=verbose",
+                ],
+                cwd=self.remotion_project,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
 
         if result.returncode != 0:
             raise RuntimeError(f"Remotion render failed: {result.stderr[-2000:]}")
