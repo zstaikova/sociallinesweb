@@ -145,9 +145,12 @@ class PullEngine:
 
     DEDUP_DAYS = 30  # how long before a post can be reused
 
-    def __init__(self, queue_dir: Path, env_file: Path):
-        self.queue_dir  = queue_dir
-        self.env_file   = env_file
+    _SCRIPT_EXTS = {".txt", ".md"}
+
+    def __init__(self, queue_dir: Path, env_file: Path, brand_id: str = ""):
+        self.queue_dir   = queue_dir
+        self.env_file    = env_file
+        self.brand_id    = brand_id
         self._dedup_file = queue_dir.parent / "dedup_log.json"
         queue_dir.mkdir(parents=True, exist_ok=True)
 
@@ -455,15 +458,156 @@ Return only the caption text, nothing else."""
         if not folder.exists():
             raise ValueError(f"Folder not found: {folder}")
 
-        EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mov"}
+        MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".mov"}
+        watch_scripts = cfg.get("watch_scripts", False)
+
         added = []
         for f in sorted(folder.iterdir()):
-            if f.is_file() and f.suffix.lower() in EXTS:
+            if not f.is_file():
+                continue
+            ext = f.suffix.lower()
+
+            # Script files — branch to render pipeline if enabled
+            if watch_scripts and ext in self._SCRIPT_EXTS:
+                # Skip if already queued as a render job (use dedup log)
+                dedup_log = self._load_dedup()
+                dedup_key = f"script:{f.name}"
+                if not self._dedup_seen(dedup_log, dedup_key):
+                    job_id = self._handle_script_file(f)
+                    if job_id:
+                        self._dedup_add(dedup_log, dedup_key)
+                        self._save_dedup(dedup_log)
+                        added.append(f.name)
+                continue
+
+            # Media files — existing queue logic unchanged
+            if ext in MEDIA_EXTS:
                 dest = self.queue_dir / f.name
                 if not dest.exists():
                     shutil.copy2(f, dest)
                     added.append(f.name)
+
         return added
+
+    def _handle_script_file(self, filepath: Path) -> str | None:
+        """
+        Route a script file into the render pipeline.
+        Returns render job_id on success, None on error.
+        """
+        from render_store import RenderStore
+
+        ext       = filepath.suffix.lower()
+        meta_path = filepath.with_suffix(".meta.json")
+
+        script_text = filepath.read_text(encoding="utf-8")
+
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        else:
+            meta = self._infer_meta(script_text, filepath.name)
+
+        try:
+            render_store = RenderStore(self.brand_id)
+            job_id = render_store.create_job(
+                script_text=script_text,
+                script_file=filepath.name,
+                meta=meta,
+            )
+            import logging
+            logging.getLogger("socialline").info(
+                f"Script queued for render: {filepath.name} → job {job_id}"
+            )
+            return job_id
+        except Exception as e:
+            import logging
+            logging.getLogger("socialline").error(
+                f"Failed to create render job for {filepath.name}: {e}"
+            )
+            return None
+
+    def _infer_meta(self, script_text: str, filename: str) -> dict:
+        """
+        When no .meta.json exists — infer metadata via Claude API.
+        Falls back to safe defaults if the API call fails.
+        """
+        import os
+        from dotenv import load_dotenv
+        import urllib.request
+        load_dotenv(self.env_file, override=True)
+
+        defaults = {
+            "pillar":           "General",
+            "topic":            Path(filename).stem.replace("_", " "),
+            "template":         "stat_overlay",
+            "tone":             "warm_bold",
+            "duration_seconds": 30,
+            "platforms":        ["tiktok", "instagram_reel", "youtube_short", "facebook"],
+            "visual":           {"type": "stars_bg", "background_file": "stars_bg.mp4"},
+            "caption_style":    "hook_problem_solution_cta",
+            "review_required":  True,
+            "priority":         0,
+        }
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return defaults
+
+        prompt = f"""Analyze this short video script and return metadata as JSON.
+
+SCRIPT:
+{script_text}
+
+Return ONLY a JSON object with these exact fields:
+{{
+  "pillar": "topic category, e.g. AI + Learning",
+  "topic": "one-line description of what this script is about",
+  "template": "one of: stat_overlay | tutorial | story | reframe | tip",
+  "tone": "one of: warm_bold | professional | energetic | calm",
+  "duration_seconds": 30,
+  "platforms": ["tiktok", "instagram_reel", "youtube_short", "facebook", "linkedin"],
+  "visual": {{"type": "stars_bg", "background_file": "stars_bg.mp4"}},
+  "caption_style": "hook_problem_solution_cta",
+  "review_required": true,
+  "priority": 0
+}}
+
+No preamble. JSON only."""
+
+        try:
+            body = json.dumps({
+                "model":      "claude-sonnet-4-6",
+                "max_tokens": 500,
+                "messages":   [{"role": "user", "content": prompt}],
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=body,
+                headers={
+                    "Content-Type":    "application/json",
+                    "x-api-key":       api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read())
+                raw = result["content"][0]["text"].strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                meta = json.loads(raw.strip())
+
+            # Write the inferred sidecar for future reference
+            meta_path = Path(self.queue_dir.parent / "scripts" /
+                             Path(filename).with_suffix(".meta.json").name)
+            if meta_path.parent.exists():
+                meta_path.write_text(json.dumps(meta, indent=2))
+
+            return {**defaults, **meta}
+        except Exception:
+            return defaults
 
     # ── Website scrape ────────────────────────────────────────────────────────
 

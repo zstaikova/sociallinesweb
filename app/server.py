@@ -126,7 +126,7 @@ def _pull_engine_for(brand_id: str) -> PullEngine:
     if brand_id not in _brand_pull_engines:
         queue_dir = _brand_dir_for(brand_id) / "queue"
         queue_dir.mkdir(parents=True, exist_ok=True)
-        _brand_pull_engines[brand_id] = PullEngine(queue_dir, ENV_FILE)
+        _brand_pull_engines[brand_id] = PullEngine(queue_dir, ENV_FILE, brand_id)
     return _brand_pull_engines[brand_id]
 
 
