@@ -60,6 +60,8 @@ _brand_sched_stores:  dict[str, ScheduleStore] = {}
 _brand_source_stores: dict[str, SourceStore]   = {}
 _brand_pull_engines:  dict[str, "PullEngine"]  = {}
 _brand_acct_stores:   dict[str, AccountStore]  = {}
+_brand_render_stores: dict = {}
+_detected_encoder:    str  = None   # cached after first probe
 
 
 
@@ -135,6 +137,31 @@ def _get_pull_engine() -> PullEngine:
     if b:
         return _pull_engine_for(b["id"])
     abort(409, "No active brand selected")
+
+
+def _render_store_for(brand_id: str):
+    if brand_id not in _brand_render_stores:
+        from render_store import RenderStore
+        _brand_render_stores[brand_id] = RenderStore(brand_id, DATA_DIR / "brands")
+    return _brand_render_stores[brand_id]
+
+
+def _get_render_store():
+    b = _get_active_brand()
+    if b:
+        return _render_store_for(b["id"])
+    abort(409, "No active brand selected")
+
+
+def _load_brand_video_config(brand_id: str) -> dict:
+    """Load video_pipeline section from data/brands/<bid>/config.json."""
+    cfg_file = _brand_dir_for(brand_id) / "config.json"
+    if cfg_file.exists():
+        try:
+            return json.loads(cfg_file.read_text())
+        except Exception:
+            pass
+    return {}
 
 
 def _acct_store_for(brand_id: str) -> AccountStore:
@@ -2167,6 +2194,215 @@ def api_schedule_generate():
                     "message": f"{count} post{'s' if count != 1 else ''} scheduled"})
 
 
+# ── Render review API ─────────────────────────────────────────────────────────
+
+@app.route("/api/renders/review", methods=["GET"])
+@login_required
+def api_renders_review():
+    """All jobs awaiting user review for the active brand."""
+    rs   = _get_render_store()
+    jobs = rs.get_pending_review()
+    for job in jobs:
+        job["outputs"] = rs.get_outputs(job["id"])
+        job["captions"] = rs.get_captions(job["id"])
+    return jsonify(jobs)
+
+
+@app.route("/api/renders/history", methods=["GET"])
+@login_required
+def api_renders_history():
+    """Completed and failed render jobs, newest first."""
+    rs     = _get_render_store()
+    status = request.args.get("status")
+    jobs   = rs.list_all(status=status)
+    return jsonify(jobs)
+
+
+@app.route("/api/renders/<job_id>", methods=["GET"])
+@login_required
+def api_render_get(job_id):
+    b  = _get_active_brand()
+    rs = _render_store_for(b["id"])
+    job = rs.get(job_id)
+    if not job or job["brand_id"] != b["id"]:
+        return jsonify({"error": "Not found"}), 404
+    job["outputs"]  = rs.get_outputs(job_id)
+    job["captions"] = rs.get_captions(job_id)
+    return jsonify(job)
+
+
+@app.route("/api/renders/<job_id>/approve", methods=["POST"])
+@login_required
+def api_render_approve(job_id):
+    """Approve a render and auto-schedule using brand's default schedule config."""
+    b  = _get_active_brand()
+    rs = _render_store_for(b["id"])
+    job = rs.get(job_id)
+    if not job or job["brand_id"] != b["id"]:
+        return jsonify({"error": "Not found"}), 404
+    if job["status"] != "pending_review":
+        return jsonify({"error": f"Job is '{job['status']}', not pending_review"}), 400
+
+    rs.approve_job(job_id)
+
+    from renderer import VideoRenderer, detect_encoder
+    global _detected_encoder
+    if _detected_encoder is None:
+        _detected_encoder = detect_encoder()
+
+    brand_cfg = _load_brand_video_config(b["id"])
+    renderer  = VideoRenderer(b["id"], brand_cfg,
+                              data_root=DATA_DIR / "brands",
+                              encoder=_detected_encoder)
+
+    outputs  = rs.get_outputs(job_id)
+    captions = rs.get_captions(job_id)
+    meta     = job.get("meta") or {}
+    scheduled = renderer._auto_schedule(job_id, outputs, captions, meta)
+
+    return jsonify({"ok": True, "scheduled": scheduled})
+
+
+@app.route("/api/renders/<job_id>/approve-schedule", methods=["POST"])
+@login_required
+def api_render_approve_schedule(job_id):
+    """Approve + schedule specific platforms at a user-chosen time."""
+    b  = _get_active_brand()
+    rs = _render_store_for(b["id"])
+    job = rs.get(job_id)
+    if not job or job["brand_id"] != b["id"]:
+        return jsonify({"error": "Not found"}), 404
+    if job["status"] != "pending_review":
+        return jsonify({"error": f"Job is '{job['status']}', not pending_review"}), 400
+
+    data         = request.get_json() or {}
+    scheduled_at = data.get("scheduled_at", "")
+    req_platforms = data.get("platforms", [])
+
+    if not scheduled_at or not req_platforms:
+        return jsonify({"error": "scheduled_at and platforms required"}), 400
+
+    try:
+        from datetime import datetime as _dt
+        slot = _dt.fromisoformat(scheduled_at)
+        if slot <= _dt.now():
+            return jsonify({"error": "Scheduled time must be in the future"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid datetime format"}), 400
+
+    rs.approve_job(job_id)
+
+    outputs  = {o["platform"]: o for o in rs.get_outputs(job_id)}
+    captions = rs.get_captions(job_id)
+    queue_dir = _brand_dir_for(b["id"]) / "queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+
+    import shutil as _shutil
+    from pathlib import Path as _P
+
+    # Group requested platforms by dimensions so same-size formats share one file
+    groups: dict[str, dict] = {}
+    for platform in req_platforms:
+        out = outputs.get(platform)
+        if not out:
+            continue
+        dims = out["dimensions"]
+        _ORIENT = {"1080x1920": "vertical", "1080x1080": "square"}
+        key = _ORIENT.get(dims, "horizontal")
+        if key not in groups:
+            groups[key] = {"file_path": out["file_path"], "platforms": []}
+        groups[key]["platforms"].append(platform)
+
+    sched_store = _sched_store_for(b["id"])
+    created = []
+    for orientation, group in groups.items():
+        src = _P(group["file_path"])
+        if not src.exists():
+            continue
+        queue_filename = f"{job_id}_{orientation}.mp4"
+        dst = queue_dir / queue_filename
+        _shutil.copy2(src, dst)
+
+        group_captions = {
+            p: (captions.get(p, {}).get("caption", "") if isinstance(captions.get(p), dict) else "")
+            for p in group["platforms"]
+        }
+        primary = next(iter(group_captions.values()), "")
+        if primary:
+            (queue_dir / f"{_P(queue_filename).stem}.caption.txt").write_text(
+                primary, encoding="utf-8"
+            )
+
+        post_id = sched_store.add(
+            filename=queue_filename,
+            captions=group_captions,
+            platforms=group["platforms"],
+            platform_options={},
+            scheduled_at=slot.isoformat(timespec="minutes"),
+        )
+        created.append({"post_id": post_id, "filename": queue_filename,
+                        "platforms": group["platforms"]})
+
+    if created:
+        rs.update_status(job_id, "scheduled")
+
+    return jsonify({"ok": True, "scheduled": created})
+
+
+@app.route("/api/renders/<job_id>/reject", methods=["POST"])
+@login_required
+def api_render_reject(job_id):
+    b  = _get_active_brand()
+    rs = _render_store_for(b["id"])
+    job = rs.get(job_id)
+    if not job or job["brand_id"] != b["id"]:
+        return jsonify({"error": "Not found"}), 404
+
+    data   = request.get_json() or {}
+    reason = data.get("reason", "")
+    rs.reject_job(job_id, reason)
+    return jsonify({"ok": True})
+
+
+# ── Renderer background thread (Step 9) ───────────────────────────────────────
+
+def _start_renderer(interval: int = 60):
+    """
+    Checks for pending_render jobs every `interval` seconds.
+    One job at a time per brand — Remotion + ComfyUI are resource-intensive.
+    """
+    import time
+    from renderer import VideoRenderer, detect_encoder
+
+    enc = detect_encoder()
+
+    def _loop():
+        while True:
+            try:
+                for brand in _brand_store.list_all():
+                    bid = brand["id"]
+                    brand_cfg = _load_brand_video_config(bid)
+                    if not brand_cfg.get("video_pipeline", {}).get("enabled", False):
+                        continue
+                    rs  = _render_store_for(bid)
+                    job = rs.get_next_pending()
+                    if job:
+                        _elog.error(  # using error channel so it shows in log even at INFO level
+                            f"[renderer] Starting job {job['id']} for brand {bid}"
+                        )
+                        renderer = VideoRenderer(bid, brand_cfg,
+                                                 data_root=DATA_DIR / "brands",
+                                                 encoder=enc)
+                        renderer.render_job(job)
+            except Exception as exc:
+                _elog.error(f"[renderer] Thread error: {exc}", exc_info=True)
+            time.sleep(interval)
+
+    t = threading.Thread(target=_loop, daemon=True, name="renderer")
+    t.start()
+    return t
+
+
 if __name__ == "__main__":
     import webbrowser, threading
     from brands import migrate_famjam
@@ -2202,6 +2438,7 @@ if __name__ == "__main__":
     # ── Background threads ──────────────────────────────────────────────────
     start_scheduler(_all_brand_scheduler_data)
     start_source_puller(_all_brand_puller_data)
+    _start_renderer()
 
     threading.Timer(1.0, lambda: webbrowser.open("https://socialline.space")).start()
     app.run(debug=False, port=5000)

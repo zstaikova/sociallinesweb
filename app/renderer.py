@@ -81,7 +81,8 @@ class VideoRenderer:
         self.comfyui_host         = vp.get("comfyui_host", "http://localhost:8188")
         self.comfyui_enabled      = vp.get("comfyui_enabled", False)
 
-        self.output_dir = data_root / brand_id / "renders"
+        self.brand_data_dir = data_root / brand_id
+        self.output_dir     = self.brand_data_dir / "renders"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         from render_store import RenderStore
@@ -434,12 +435,116 @@ Return the JSON array now:"""
     # ── Auto-schedule (Step 8) ────────────────────────────────────────────────
 
     def _auto_schedule(self, job_id: str, outputs: list, captions: dict,
-                       meta: dict):
+                       meta: dict) -> list:
         """
         Copy approved render outputs to queue/ and create schedule.db entries.
-        Implemented in Step 8.
+        Groups outputs by aspect ratio so same-dimension platforms share one entry.
+        Returns list of scheduled post dicts.
         """
-        pass
+        from scheduler import ScheduleStore, _load_sched_file
+        from datetime import datetime, timedelta
+
+        queue_dir = self.brand_data_dir / "queue"
+        queue_dir.mkdir(parents=True, exist_ok=True)
+
+        sched_store = ScheduleStore(self.brand_data_dir / "schedule.db")
+        sched_cfg   = _load_sched_file(self.brand_data_dir / "default_schedule.json")
+
+        # Preferred schedule — meta overrides default_schedule.json
+        sched_meta = meta.get("schedule", {})
+        preferred_time = (
+            sched_meta.get("preferred_time")
+            or (sched_cfg.get("times") or ["09:00"])[0]
+        )
+
+        _DAY_MAP = {
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6,
+        }
+        raw_days = sched_meta.get("preferred_days", [])
+        preferred_weekdays = (
+            [_DAY_MAP[d.lower()] for d in raw_days if d.lower() in _DAY_MAP]
+            if raw_days else sched_cfg.get("days_of_week", list(range(7)))
+        )
+        days_ahead = int(sched_cfg.get("days_ahead", 7))
+
+        h, m = map(int, preferred_time.split(":"))
+        now = datetime.now()
+        occupied = {p["scheduled_at"][:16] for p in sched_store.list_all(status="pending")}
+
+        def _next_slot() -> datetime:
+            for delta in range(1, days_ahead + 2):
+                candidate = now + timedelta(days=delta)
+                if candidate.weekday() in preferred_weekdays:
+                    slot = candidate.replace(hour=h, minute=m, second=0, microsecond=0)
+                    key  = slot.strftime("%Y-%m-%dT%H:%M")
+                    if key not in occupied:
+                        occupied.add(key)
+                        return slot
+            # Fallback: tomorrow at preferred time regardless of weekday
+            return (now + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
+
+        # Group outputs by orientation — one queue file + schedule entry per aspect ratio
+        _ORIENT = {"1080x1920": "vertical", "1080x1080": "square"}
+        groups: dict[str, dict] = {}
+        for out in outputs:
+            key = _ORIENT.get(out["dimensions"], "horizontal")
+            if key not in groups:
+                groups[key] = {
+                    "file_path": out["file_path"],
+                    "dimensions": out["dimensions"],
+                    "platforms": [],
+                }
+            groups[key]["platforms"].append(out["platform"])
+
+        scheduled = []
+        for orientation, group in groups.items():
+            src = Path(group["file_path"])
+            if not src.exists():
+                logger.warning(f"Render output missing: {src}")
+                continue
+
+            queue_filename = f"{job_id}_{orientation}.mp4"
+            dst = queue_dir / queue_filename
+            shutil.copy2(src, dst)
+
+            # Per-platform captions for this orientation group
+            group_captions = {
+                p: (captions.get(p, {}).get("caption", "") if isinstance(captions.get(p), dict) else "")
+                for p in group["platforms"]
+            }
+
+            # Caption sidecar — primary platform's text
+            primary_caption = next(iter(group_captions.values()), "")
+            if primary_caption:
+                (queue_dir / f"{Path(queue_filename).stem}.caption.txt").write_text(
+                    primary_caption, encoding="utf-8"
+                )
+
+            slot    = _next_slot()
+            post_id = sched_store.add(
+                filename=queue_filename,
+                captions=group_captions,
+                platforms=group["platforms"],
+                platform_options={},
+                scheduled_at=slot.isoformat(timespec="minutes"),
+            )
+            scheduled.append({
+                "post_id":     post_id,
+                "filename":    queue_filename,
+                "orientation": orientation,
+                "platforms":   group["platforms"],
+                "scheduled_at": slot.isoformat(timespec="minutes"),
+            })
+            logger.info(
+                f"Render {job_id} auto-scheduled: {queue_filename} → "
+                f"{slot.strftime('%Y-%m-%d %H:%M')} ({', '.join(group['platforms'])})"
+            )
+
+        if scheduled:
+            self.render_store.update_status(job_id, "scheduled")
+
+        return scheduled
 
     # ── ComfyUI ───────────────────────────────────────────────────────────────
 
