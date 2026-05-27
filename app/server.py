@@ -485,8 +485,8 @@ SETUP_PLATFORMS = [
         "keys_required": ["SUBSTACK_SESSION_TOKEN", "SUBSTACK_PUBLICATION"],
         "form_fields": [
             {"key": "SUBSTACK_PUBLICATION", "label": "Publication name",
-             "placeholder": "yourpublication",
-             "help": "The subdomain of your Substack (yourpublication.substack.com — enter just 'yourpublication')"},
+             "placeholder": "cognifylearn",
+             "help": "Your Substack handle — the part after @ in substack.com/@yourhandle. You can also paste the full URL."},
             {"key": "SUBSTACK_SESSION_TOKEN", "label": "Session cookie", "type": "password",
              "help": "Chrome/Edge: DevTools (F12) → Application → Cookies → substack.com → substack.sid. Firefox: DevTools (F12) → Storage → Cookies → substack.com → substack.sid"},
         ],

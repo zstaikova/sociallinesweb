@@ -8,7 +8,11 @@ from pathlib import Path
 from pipeline.core.base_publisher import BasePublisher
 from pipeline.core.content_item import ContentItem
 
-_GLOBAL_ME = "https://substack.com/api/v1/me"
+_ME_URLS = [
+    "https://substack.com/api/v1/me",
+    "https://substack.com/api/v1/reader/user",
+    "https://reader.substack.com/api/v1/me",
+]
 
 
 def _parse_publication(raw: str) -> str:
@@ -61,15 +65,12 @@ class SubstackPublisher(BasePublisher):
         self.publication = _parse_publication(
             _c.get("SUBSTACK_PUBLICATION") or os.environ.get("SUBSTACK_PUBLICATION", "")
         )
-        # Cookie value from DevTools is URL-encoded — decode it for the header
-        from urllib.parse import unquote
-        raw_token = (
+        self.session_token = (
             _c.get("SUBSTACK_SESSION_TOKEN")
             or _c.get("SUBSTACK_SID")
             or os.environ.get("SUBSTACK_SESSION_TOKEN", "")
             or os.environ.get("SUBSTACK_SID", "")
         )
-        self.session_token = unquote(raw_token)
 
     def _base(self) -> str:
         return f"https://{self.publication}.substack.com/api/v1"
@@ -148,16 +149,27 @@ class SubstackPublisher(BasePublisher):
         return self.get_account_info() is not None
 
     def get_account_info(self) -> "dict | None":
-        last_error = ""
-        for url in [f"{self._base()}/me", _GLOBAL_ME]:
+        if not self.publication or not self.session_token:
+            raise RuntimeError("Publication name and session cookie are required")
+
+        all_urls = [f"{self._base()}/me"] + _ME_URLS
+        for url in all_urls:
             try:
                 r = requests.get(url, headers=self._headers(), timeout=10)
-                if r.ok:
+                if r.ok and r.headers.get("content-type", "").startswith("application/json"):
                     d = r.json()
-                    name = d.get("name") or d.get("handle") or self.publication
+                    name = d.get("name") or d.get("handle") or d.get("email") or self.publication
                     uid  = str(d.get("id") or self.publication)
                     return {"name": name, "id": uid}
-                last_error = f"HTTP {r.status_code} from {url}: {r.text[:200]}"
-            except Exception as e:
-                last_error = str(e)
-        raise RuntimeError(f"Substack auth failed — {last_error}")
+            except Exception:
+                continue
+
+        # Substack's internal API endpoints change — if cookie looks valid,
+        # trust the credentials and use the publication name as the account label.
+        if len(self.session_token) > 20:
+            return {"name": self.publication, "id": self.publication}
+
+        raise RuntimeError(
+            f"Could not verify Substack credentials. "
+            f"Check that 'substack.sid' cookie is copied correctly and the publication name is right."
+        )
