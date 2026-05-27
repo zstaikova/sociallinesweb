@@ -407,17 +407,6 @@ body {
 }
 .platform-card .card-header { background: #fafafa; border-bottom: 1px solid #f0f2f5; }
 .platform-card textarea { font-size: 0.85rem; resize: vertical; }
-
-/* Accounts page overview cards — keep status badge inside the card */
-.platform-card-overview { overflow: hidden !important; }
-.platform-card-header { overflow: hidden; min-width: 0; }
-.platform-card-header .badge {
-  flex-shrink: 0;
-  max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .disabled-card { opacity: 0.35; pointer-events: none; }
 
 .btn-platform {

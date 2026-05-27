@@ -15,10 +15,12 @@
           <i class="bi {{ p.icon }}" style="color:{{ p.color }};"></i>
         </div>
         <div class="flex-grow-1 min-w-0">
-          <div class="fw-semibold">{{ p.name }}</div>
-          <div class="text-muted" style="font-size:.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ p.note }}</div>
+          <div class="d-flex align-items-center gap-1 min-w-0">
+            <span class="fw-semibold text-truncate">{{ p.name }}</span>
+            <span id="pstatus-{{ p.id }}" class="badge border text-truncate flex-shrink-0" style="font-size:.6rem;max-width:85px;"></span>
+          </div>
+          <div class="text-muted text-truncate" style="font-size:.7rem;">{{ p.note }}</div>
         </div>
-        <span id="pstatus-{{ p.id }}" class="badge border text-truncate" style="font-size:.6rem;flex-shrink:0;max-width:90px;"></span>
         <i class="bi bi-chevron-down" id="pchevron-{{ p.id }}"
            style="font-size:.75rem;color:#9ca3af;transition:transform .2s;flex-shrink:0;"></i>
       </div>
