@@ -111,25 +111,19 @@ class SubstackPublisher(BasePublisher):
         return False
 
     def verify_auth(self) -> bool:
-        info = self.get_account_info()
-        return info is not None
+        return self.get_account_info() is not None
 
     def get_account_info(self) -> "dict | None":
-        # Try publication-local /me first, fall back to global
+        last_error = ""
         for url in [f"{self._base()}/me", _GLOBAL_ME]:
             try:
-                r = requests.get(
-                    url,
-                    headers=self._headers(),
-                    timeout=10,
-                )
+                r = requests.get(url, headers=self._headers(), timeout=10)
                 if r.ok:
                     d = r.json()
                     name = d.get("name") or d.get("handle") or self.publication
                     uid  = str(d.get("id") or self.publication)
-                    print(f"  Substack: connected as {name}")
                     return {"name": name, "id": uid}
-            except Exception:
-                continue
-        print(f"  Substack: could not verify — check session token and publication name")
-        return None
+                last_error = f"HTTP {r.status_code} from {url}: {r.text[:200]}"
+            except Exception as e:
+                last_error = str(e)
+        raise RuntimeError(f"Substack auth failed — {last_error}")
