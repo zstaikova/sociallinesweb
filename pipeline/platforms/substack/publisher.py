@@ -30,7 +30,9 @@ class SubstackPublisher(BasePublisher):
         _c = credentials or {}
         self.session_token = (
             _c.get("SUBSTACK_SESSION_TOKEN")
+            or _c.get("SUBSTACK_SID")
             or os.environ.get("SUBSTACK_SESSION_TOKEN", "")
+            or os.environ.get("SUBSTACK_SID", "")
         )
         self.publication = (
             (_c.get("SUBSTACK_PUBLICATION") or os.environ.get("SUBSTACK_PUBLICATION", ""))
@@ -43,7 +45,7 @@ class SubstackPublisher(BasePublisher):
 
     def _headers(self) -> dict:
         return {
-            "Cookie": f"connect.sid={self.session_token}",
+            "Cookie": f"substack.sid={self.session_token}",
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (compatible; Socialline/1.0)",
         }
@@ -54,7 +56,7 @@ class SubstackPublisher(BasePublisher):
                 resp = requests.post(
                     f"{self._base()}/image",
                     headers={
-                        "Cookie": f"connect.sid={self.session_token}",
+                        "Cookie": f"substack.sid={self.session_token}",
                         "User-Agent": "Mozilla/5.0",
                     },
                     files={"image": (path.name, f, "image/jpeg")},
