@@ -6,7 +6,7 @@
 
 {% macro platform_card(p) %}
 <div class="col-12 col-md-6 col-lg-4">
-  <div class="card h-100 shadow-sm platform-card-overview" style="border-left: 4px solid {{ p.color }};">
+  <div class="card h-100 shadow-sm platform-card-overview" style="border-left: 4px solid {{ p.color }};overflow:hidden;">
     <div class="card-body p-3">
       <div class="d-flex align-items-center gap-2 platform-card-header"
            onclick="togglePlatformCard('{{ p.id }}')" style="cursor:pointer;user-select:none;">
@@ -18,7 +18,7 @@
           <div class="fw-semibold">{{ p.name }}</div>
           <div class="text-muted" style="font-size:.7rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ p.note }}</div>
         </div>
-        <span id="pstatus-{{ p.id }}" class="badge border" style="font-size:.6rem;flex-shrink:0;"></span>
+        <span id="pstatus-{{ p.id }}" class="badge border text-truncate" style="font-size:.6rem;flex-shrink:0;max-width:90px;"></span>
         <i class="bi bi-chevron-down" id="pchevron-{{ p.id }}"
            style="font-size:.75rem;color:#9ca3af;transition:transform .2s;flex-shrink:0;"></i>
       </div>
