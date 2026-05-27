@@ -1585,6 +1585,22 @@ def api_setup_status(platform_id):
         # Case 2: first account — subprocess finished successfully and tokens are in .env
         proc_succeeded = proc is not None and proc.poll() == 0
         tokens_ready   = proc_succeeded and _platform_status_env_only(p)
+
+        # Auto-import into AccountStore when subprocess finished and tokens are fresh
+        if tokens_ready and not new_account_saved:
+            try:
+                load_dotenv(ENV_FILE, override=True)
+                publisher = _make_publisher(platform_id)
+                if publisher:
+                    info = publisher.get_account_info()
+                    if info:
+                        acct  = _get_acct_store()
+                        creds = acct.snapshot_from_env(platform_id)
+                        acct.add(platform_id, info["name"], info["id"], creds)
+                        _oauth_account_counts.pop(platform_id, None)
+            except Exception as _auto_err:
+                logger.warning(f"Auto-import failed for {platform_id}: {_auto_err}")
+
         configured = new_account_saved or tokens_ready
 
     return jsonify({"configured": configured, "oauth_running": running})
