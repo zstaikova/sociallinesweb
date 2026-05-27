@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,29 @@ from pipeline.core.base_publisher import BasePublisher
 from pipeline.core.content_item import ContentItem
 
 _GLOBAL_ME = "https://substack.com/api/v1/me"
+
+
+def _parse_publication(raw: str) -> str:
+    """Extract the publication subdomain from any URL format the user might paste.
+
+    Handles:
+      cognifylearn
+      cognifylearn.substack.com
+      https://cognifylearn.substack.com
+      https://cognifylearn.substack.com/
+      https://substack.com/@cognifylearn
+    """
+    raw = raw.strip().rstrip("/")
+    # Full substack.com URL with @ handle → extract the handle
+    m = re.search(r"substack\.com/@([A-Za-z0-9_-]+)", raw)
+    if m:
+        return m.group(1).lower()
+    # Any URL containing a subdomain like cognifylearn.substack.com
+    m = re.search(r"([A-Za-z0-9_-]+)\.substack\.com", raw)
+    if m:
+        return m.group(1).lower()
+    # Plain subdomain already
+    return raw.lower()
 
 
 def _text_to_tiptap(text: str) -> str:
@@ -34,11 +58,18 @@ class SubstackPublisher(BasePublisher):
             or os.environ.get("SUBSTACK_SESSION_TOKEN", "")
             or os.environ.get("SUBSTACK_SID", "")
         )
-        self.publication = (
-            (_c.get("SUBSTACK_PUBLICATION") or os.environ.get("SUBSTACK_PUBLICATION", ""))
-            .removesuffix(".substack.com")
-            .strip()
+        self.publication = _parse_publication(
+            _c.get("SUBSTACK_PUBLICATION") or os.environ.get("SUBSTACK_PUBLICATION", "")
         )
+        # Cookie value from DevTools is URL-encoded — decode it for the header
+        from urllib.parse import unquote
+        raw_token = (
+            _c.get("SUBSTACK_SESSION_TOKEN")
+            or _c.get("SUBSTACK_SID")
+            or os.environ.get("SUBSTACK_SESSION_TOKEN", "")
+            or os.environ.get("SUBSTACK_SID", "")
+        )
+        self.session_token = unquote(raw_token)
 
     def _base(self) -> str:
         return f"https://{self.publication}.substack.com/api/v1"
@@ -47,6 +78,7 @@ class SubstackPublisher(BasePublisher):
         return {
             "Cookie": f"substack.sid={self.session_token}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
             "User-Agent": "Mozilla/5.0 (compatible; Socialline/1.0)",
         }
 
