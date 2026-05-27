@@ -499,10 +499,10 @@ Return only the caption text, nothing else."""
         ext       = filepath.suffix.lower()
         meta_path = filepath.with_suffix(".meta.json")
 
-        script_text = filepath.read_text(encoding="utf-8")
+        script_text = filepath.read_text(encoding="utf-8", errors="replace")
 
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
         else:
             meta = self._infer_meta(script_text, filepath.name)
 
