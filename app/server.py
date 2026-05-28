@@ -949,11 +949,12 @@ def index():
 @app.route("/queue")
 @login_required
 def queue():
-    try:
-        db_stats = _get_content_store().stats()
-    except Exception:
-        db_stats = {"total": 0, "posted": 0, "failed": 0}
     posted_items = _list_dir(_get_posted_dir(), reverse=True)
+    try:
+        sched_stats = _get_sched_store().stats()
+        all_time_posted = sched_stats.get("published", 0)
+    except Exception:
+        all_time_posted = 0
     return render_template(
         "queue.html",
         images=_list_dir(_get_queue_dir()),
@@ -961,7 +962,7 @@ def queue():
         stats={
             "queue":  len(_list_dir(_get_queue_dir())),
             "posted": len(posted_items),
-            "db_posted": db_stats.get("posted", 0),
+            "db_posted": all_time_posted,
         },
     )
 

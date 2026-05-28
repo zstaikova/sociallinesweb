@@ -106,6 +106,13 @@ class ScheduleStore:
         with self._conn() as conn:
             conn.execute("DELETE FROM scheduled_posts WHERE id=?", (post_id,))
 
+    def stats(self) -> dict:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM scheduled_posts GROUP BY status"
+            ).fetchall()
+        return {r["status"]: r["cnt"] for r in rows}
+
 
 # ── Background runner ────────────────────────────────────────────────────────
 
