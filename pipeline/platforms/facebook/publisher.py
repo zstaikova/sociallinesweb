@@ -1,5 +1,6 @@
 import io
 import os
+import time
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from pipeline.core.content_item import ContentItem
 
 GRAPH_URL    = "https://graph.facebook.com/v19.0"
 MAX_BYTES    = 4 * 1024 * 1024   # Facebook /photos multipart limit
+MAX_CAPTION  = 2_000              # characters — long captions cause API code:1 errors
 
 
 def _compress_image(path: Path) -> tuple[bytes, str]:
@@ -63,42 +65,56 @@ class FacebookPublisher(BasePublisher):
         path    = item.media_path
         size    = path.stat().st_size
 
-        try:
-            if size > MAX_BYTES:
-                print(f"  Facebook: image {size // 1024}KB > 4MB limit — compressing")
-                img_bytes, mime = _compress_image(path)
-                files = {"source": (path.name, img_bytes, mime)}
-            else:
-                files = {"source": open(path, "rb")}
+        for attempt in range(2):
+            try:
+                if size > MAX_BYTES:
+                    print(f"  Facebook: image {size // 1024}KB > 4MB limit — compressing")
+                    img_bytes, mime = _compress_image(path)
+                    files = {"source": (path.name, img_bytes, mime)}
+                else:
+                    files = {"source": open(path, "rb")}
 
-            resp = requests.post(
-                f"{GRAPH_URL}/{self.page_id}/photos",
-                data={"caption": caption, "access_token": self.access_token},
-                files=files,
-                timeout=60,
-            )
+                resp = requests.post(
+                    f"{GRAPH_URL}/{self.page_id}/photos",
+                    data={"caption": caption, "access_token": self.access_token},
+                    files=files,
+                    timeout=60,
+                )
 
-            # Close the raw file handle if we opened one
-            if hasattr(files["source"], "close"):
-                files["source"].close()
+                if hasattr(files["source"], "close"):
+                    files["source"].close()
 
-            if resp.ok:
-                data = resp.json()
-                post_id = data.get("post_id") or data.get("id")
-                item.metadata["facebook_post_id"] = post_id
-                item.posted_at = datetime.utcnow()
-                return True
-            else:
+                if resp.ok:
+                    data = resp.json()
+                    post_id = data.get("post_id") or data.get("id")
+                    item.metadata["facebook_post_id"] = post_id
+                    item.posted_at = datetime.utcnow()
+                    return True
+
+                err = resp.json().get("error", {}) if resp.headers.get("content-type", "").startswith("application/json") else {}
+                # Code 1 / 2 are transient — retry once after a short wait
+                if err.get("code") in (1, 2) and attempt == 0:
+                    print(f"  Facebook: transient error (code {err.get('code')}) — retrying in 5s")
+                    time.sleep(5)
+                    continue
+
                 print(f"  Facebook API error: {resp.status_code} {resp.text}")
                 return False
 
-        except Exception as e:
-            print(f"  Facebook publish exception: {e}")
-            return False
+            except Exception as e:
+                print(f"  Facebook publish exception: {e}")
+                if attempt == 0:
+                    time.sleep(3)
+                    continue
+                return False
+        return False
 
     def _build_caption(self, item: ContentItem) -> str:
         parts = [item.caption]
         if item.tags:
             hashtags = " ".join(f"#{t.replace(' ', '')}" for t in item.tags[:10])
             parts.append(hashtags)
-        return "\n\n".join(p for p in parts if p)
+        full = "\n\n".join(p for p in parts if p)
+        if len(full) > MAX_CAPTION:
+            full = full[:MAX_CAPTION - 1] + "…"
+        return full

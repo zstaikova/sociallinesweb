@@ -333,15 +333,27 @@ async function postInline(cid, filename) {
     const results = await res.json();
 
     let posted = 0, failed = 0, lines = [];
+    const authFailed = [];
     Object.entries(results).forEach(([p, r]) => {
-      if (r.status === 'posted') { posted++; lines.push(`✓ ${p}`); }
-      else { failed++; lines.push(`✗ ${p}: ${r.detail || r.status}`); }
+      if (r.status === 'posted') {
+        posted++;
+        lines.push(`<span style="color:#16a34a;">✓ ${p}</span>`);
+      } else {
+        failed++;
+        const detail = r.detail || r.status || '';
+        const isAuth = /403|401|OAuthException|Unauthorized|token|permission/i.test(detail);
+        if (isAuth) authFailed.push(p);
+        const hint = isAuth
+          ? ` <a href="/accounts#${p}" style="font-size:.7rem;color:#9333ea;">Reconnect →</a>`
+          : '';
+        lines.push(`<span style="color:#dc2626;">✗ ${p}: ${detail}${hint}</span>`);
+      }
     });
 
     resultEl.style.display = 'block';
     resultEl.style.background = failed ? '#fef2f2' : '#f0fdf4';
-    resultEl.style.color      = failed ? '#dc2626' : '#16a34a';
     resultEl.style.border     = `1px solid ${failed ? '#fecaca' : '#bbf7d0'}`;
+    resultEl.style.color      = '#111';
     resultEl.innerHTML = lines.join('<br>');
 
     if (!failed) {
