@@ -159,7 +159,7 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
             source_platform="local",
             media_path=image_path,
             caption=captions.get("facebook", image_path.stem),
-            tags=["scheduled"],
+            tags=[],
         )
 
         if not content_store.exists(item.id):
