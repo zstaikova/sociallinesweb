@@ -2489,8 +2489,8 @@ if __name__ == "__main__":
 
     print()
     print("  Socialline")
-    print("  https://socialline.space  (public)")
-    print("  http://localhost:5000     (local)")
+    print("  https://app.socialline.space  (public)")
+    print("  http://localhost:5000         (local)")
     brands = _brand_store.list_all()
     for b in brands:
         print(f"  Brand: {b['name']} ({b['slug']}) → brands/{b['id']}/")
@@ -2501,5 +2501,5 @@ if __name__ == "__main__":
     start_source_puller(_all_brand_puller_data)
     _start_renderer()
 
-    threading.Timer(1.0, lambda: webbrowser.open("https://socialline.space")).start()
+    threading.Timer(1.0, lambda: webbrowser.open("https://app.socialline.space")).start()
     app.run(debug=False, port=5000)
