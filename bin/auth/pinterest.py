@@ -71,7 +71,8 @@ def exchange_code(code):
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    data = resp.json()
+    return data["access_token"], data.get("refresh_token", "")
 
 
 def get_boards(token):
@@ -106,7 +107,7 @@ def main():
         sys.exit(1)
 
     print("Exchanging for token...")
-    token = exchange_code(auth_code)
+    token, refresh_token = exchange_code(auth_code)
 
     boards = get_boards(token)
     if not boards:
@@ -127,6 +128,8 @@ def main():
     set_key(str(ENV_FILE), "PINTEREST_CLIENT_SECRET",  CLIENT_SECRET)
     set_key(str(ENV_FILE), "PINTEREST_ACCESS_TOKEN",   token)
     set_key(str(ENV_FILE), "PINTEREST_BOARD_ID",       board_id)
+    if refresh_token:
+        set_key(str(ENV_FILE), "PINTEREST_REFRESH_TOKEN", refresh_token)
 
     print(f"\nSaved to {ENV_FILE}")
     print("\nVerify with: python bin/cli.py auth pinterest")

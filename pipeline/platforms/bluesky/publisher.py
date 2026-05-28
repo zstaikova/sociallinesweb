@@ -9,19 +9,14 @@ IMAGE_MIMETYPES = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
 }
+MAX_CAPTION = 300
 
 
 class BlueskyPublisher(BasePublisher):
-    """
-    Publishes image posts to Bluesky via the AT Protocol.
-    Credentials: BLUESKY_HANDLE, BLUESKY_APP_PASSWORD
-    Get an app password at: https://bsky.app/settings/app-passwords
-    """
-
     def __init__(self, credentials: dict = None):
         _c = credentials or {}
-        self.handle       = _c.get("BLUESKY_HANDLE")        or os.environ["BLUESKY_HANDLE"]
-        self.app_password = _c.get("BLUESKY_APP_PASSWORD")  or os.environ["BLUESKY_APP_PASSWORD"]
+        self.handle       = _c.get("BLUESKY_HANDLE")       or os.environ["BLUESKY_HANDLE"]
+        self.app_password = _c.get("BLUESKY_APP_PASSWORD") or os.environ["BLUESKY_APP_PASSWORD"]
 
     def _client(self):
         from atproto import Client
@@ -34,7 +29,8 @@ class BlueskyPublisher(BasePublisher):
             client  = self._client()
             profile = client.get_profile(self.handle)
             return {"name": f"@{profile.handle}", "id": profile.did}
-        except Exception:
+        except Exception as e:
+            print(f"  Bluesky get_account_info failed: {e}")
             return None
 
     def verify_auth(self) -> bool:
@@ -50,22 +46,25 @@ class BlueskyPublisher(BasePublisher):
             from atproto import client_utils
             client = self._client()
 
+            text = (item.caption or "")[:MAX_CAPTION]
             text_builder = client_utils.TextBuilder()
-            text_builder.text(item.caption or "")
+            text_builder.text(text)
 
             if item.media_path and item.media_path.exists():
-                ext      = Path(item.media_path).suffix.lower()
+                ext      = item.media_path.suffix.lower()
                 mimetype = IMAGE_MIMETYPES.get(ext, "image/jpeg")
                 with open(item.media_path, "rb") as f:
                     image_data = f.read()
                 upload = client.upload_blob(image_data)
-                images = [{"image": upload.blob, "alt": item.caption or ""}]
-                embed  = {"$type": "app.bsky.embed.images", "images": images}
-                post   = client.send_post(text_builder, embed=embed)
+                embed  = {
+                    "$type": "app.bsky.embed.images",
+                    "images": [{"image": upload.blob, "alt": text[:1000]}],
+                }
+                post = client.send_post(text_builder, embed=embed)
             else:
                 post = client.send_post(text_builder)
 
-            item.metadata["bluesky_post_uri"] = post.uri
+            item.metadata["bluesky_post_id"] = post.uri
             item.posted_at = datetime.now(timezone.utc)
             return True
 

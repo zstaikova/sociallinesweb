@@ -17,6 +17,7 @@ class EtsyPublisher(BasePublisher):
         self.shop_id      = _c.get("ETSY_SHOP_ID")      or os.environ.get("ETSY_SHOP_ID", "")
         self.default_price       = float(_c.get("ETSY_DEFAULT_PRICE") or os.environ.get("ETSY_DEFAULT_PRICE", "9.99"))
         self.default_taxonomy_id = int(_c.get("ETSY_DEFAULT_TAXONOMY_ID") or os.environ.get("ETSY_DEFAULT_TAXONOMY_ID", "2078"))
+        self.default_quantity    = int(_c.get("ETSY_DEFAULT_QUANTITY") or os.environ.get("ETSY_DEFAULT_QUANTITY", "1"))
 
     def _headers(self) -> dict:
         return {
@@ -50,13 +51,13 @@ class EtsyPublisher(BasePublisher):
             f"{ETSY_API_BASE}/shops/{self.shop_id}/listings",
             headers={**self._headers(), "Content-Type": "application/json"},
             json={
-                "quantity":    999,
+                "quantity":    item.metadata.get("etsy_quantity", self.default_quantity),
                 "title":       title,
                 "description": caption or title,
-                "price":       self.default_price,
+                "price":       item.metadata.get("etsy_price", self.default_price),
                 "who_made":    "i_did",
-                "when_made":   "2020_2024",
-                "taxonomy_id": self.default_taxonomy_id,
+                "when_made":   item.metadata.get("etsy_when_made", "2020_2024"),
+                "taxonomy_id": item.metadata.get("etsy_taxonomy_id", self.default_taxonomy_id),
             },
             timeout=30,
         )
@@ -69,7 +70,7 @@ class EtsyPublisher(BasePublisher):
             if not self._upload_image(listing_id, item.media_path):
                 print(f"  Etsy: image upload failed for listing {listing_id} (listing created as draft)")
 
-        item.metadata["etsy_listing_id"] = listing_id
+        item.metadata["etsy_post_id"] = listing_id
         item.posted_at = datetime.now().isoformat()
         print(f"  Etsy: created draft listing '{title}' (id={listing_id})")
         return True

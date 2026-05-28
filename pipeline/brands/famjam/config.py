@@ -6,10 +6,21 @@ from pipeline.themes.memes.config import create_source, create_shared_transforme
 BRAND_NAME = "@famjammemes"
 
 
+def _make_refresh_cb(acct: AccountStore, platform: str,
+                     access_key: str, refresh_key: str = None):
+    """Return an on_token_refresh callback that persists new tokens to AccountStore."""
+    def _cb(new_access, new_refresh=None):
+        partial = {access_key: new_access}
+        if refresh_key and new_refresh:
+            partial[refresh_key] = new_refresh
+        acct.update_credentials(platform, partial)
+    return _cb
+
+
 def create_pipeline(platforms: list, store: ContentStore = None,
                     account_store: AccountStore = None, **kwargs) -> Pipeline:
     store = store or ContentStore()
-    acct  = account_store or AccountStore()  # fallback to root accounts.enc for CLI use
+    acct  = account_store or AccountStore()
 
     source = create_source(
         on_candidate=store.log_fetch,
@@ -36,83 +47,90 @@ def create_pipeline(platforms: list, store: ContentStore = None,
     def _creds(p):
         return acct.get_credentials(p)
 
-    def _has_creds(p):
+    def _has(p):
         return bool(_creds(p))
 
-    if "facebook" in platforms and _has_creds("facebook"):
+    if "facebook" in platforms and _has("facebook"):
         from pipeline.platforms.facebook.publisher import FacebookPublisher
-        platform_configs.append(PlatformConfig(publisher=FacebookPublisher(_creds("facebook"))))
+        platform_configs.append(PlatformConfig(
+            publisher=FacebookPublisher(_creds("facebook"))))
 
-    if "instagram" in platforms and _has_creds("instagram"):
+    if "instagram" in platforms and _has("instagram"):
         from pipeline.platforms.instagram.publisher import InstagramPublisher
-        platform_configs.append(PlatformConfig(publisher=InstagramPublisher(_creds("instagram"))))
+        platform_configs.append(PlatformConfig(
+            publisher=InstagramPublisher(
+                _creds("instagram"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "instagram", "INSTAGRAM_ACCESS_TOKEN"))))
 
-    if "x" in platforms and _has_creds("x"):
+    if "x" in platforms and _has("x"):
         from pipeline.platforms.x.publisher import XPublisher
         platform_configs.append(PlatformConfig(publisher=XPublisher(_creds("x"))))
 
-    if "tiktok" in platforms and _has_creds("tiktok"):
+    if "tiktok" in platforms and _has("tiktok"):
         from pipeline.platforms.tiktok.publisher import TikTokPublisher
         from pipeline.platforms.tiktok.remotion_transformer import from_spec as remotion_for
-        _tiktok_creds = _creds("tiktok")
-
-        def _tiktok_on_refresh(new_access_token, new_refresh_token):
-            account = acct.get_active("tiktok")
-            if account:
-                updated = {**account.credentials,
-                           "TIKTOK_ACCESS_TOKEN":  new_access_token,
-                           "TIKTOK_REFRESH_TOKEN": new_refresh_token}
-                acct.add("tiktok", account.account_name, account.account_id, updated)
-
         platform_configs.append(PlatformConfig(
-            publisher=TikTokPublisher(_tiktok_creds, on_token_refresh=_tiktok_on_refresh),
+            publisher=TikTokPublisher(
+                _creds("tiktok"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "tiktok", "TIKTOK_ACCESS_TOKEN", "TIKTOK_REFRESH_TOKEN")),
             transformers=[remotion_for("tiktok", brand_name=BRAND_NAME)],
         ))
 
-    if "threads" in platforms and _has_creds("threads"):
+    if "threads" in platforms and _has("threads"):
         from pipeline.platforms.threads.publisher import ThreadsPublisher
-        platform_configs.append(PlatformConfig(publisher=ThreadsPublisher(_creds("threads"))))
+        platform_configs.append(PlatformConfig(
+            publisher=ThreadsPublisher(
+                _creds("threads"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "threads", "THREADS_ACCESS_TOKEN"))))
 
-    if "bluesky" in platforms and _has_creds("bluesky"):
+    if "bluesky" in platforms and _has("bluesky"):
         from pipeline.platforms.bluesky.publisher import BlueskyPublisher
-        platform_configs.append(PlatformConfig(publisher=BlueskyPublisher(_creds("bluesky"))))
+        platform_configs.append(PlatformConfig(
+            publisher=BlueskyPublisher(_creds("bluesky"))))
 
-    if "linkedin" in platforms and _has_creds("linkedin"):
+    if "linkedin" in platforms and _has("linkedin"):
         from pipeline.platforms.linkedin.publisher import LinkedInPublisher
-        platform_configs.append(PlatformConfig(publisher=LinkedInPublisher(_creds("linkedin"))))
+        platform_configs.append(PlatformConfig(
+            publisher=LinkedInPublisher(
+                _creds("linkedin"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "linkedin", "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_REFRESH_TOKEN"))))
 
-    if "pinterest" in platforms and _has_creds("pinterest"):
+    if "pinterest" in platforms and _has("pinterest"):
         from pipeline.platforms.pinterest.publisher import PinterestPublisher
-        platform_configs.append(PlatformConfig(publisher=PinterestPublisher(_creds("pinterest"))))
+        platform_configs.append(PlatformConfig(
+            publisher=PinterestPublisher(
+                _creds("pinterest"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "pinterest", "PINTEREST_ACCESS_TOKEN", "PINTEREST_REFRESH_TOKEN"))))
 
-    if "telegram" in platforms and _has_creds("telegram"):
+    if "telegram" in platforms and _has("telegram"):
         from pipeline.platforms.telegram.publisher import TelegramPublisher
-        platform_configs.append(PlatformConfig(publisher=TelegramPublisher(_creds("telegram"))))
+        platform_configs.append(PlatformConfig(
+            publisher=TelegramPublisher(_creds("telegram"))))
 
-    if "youtube" in platforms and _has_creds("youtube"):
+    if "youtube" in platforms and _has("youtube"):
         from pipeline.platforms.youtube.publisher import YouTubePublisher
         from pipeline.platforms.tiktok.remotion_transformer import from_spec as remotion_for
-        _youtube_creds = _creds("youtube")
-
-        def _youtube_on_refresh(new_access_token, new_refresh_token=None):
-            account = acct.get_active("youtube")
-            if account:
-                updated = {**account.credentials, "YOUTUBE_ACCESS_TOKEN": new_access_token}
-                if new_refresh_token:
-                    updated["YOUTUBE_REFRESH_TOKEN"] = new_refresh_token
-                acct.add("youtube", account.account_name, account.account_id, updated)
-
         platform_configs.append(PlatformConfig(
-            publisher=YouTubePublisher(_youtube_creds, on_token_refresh=_youtube_on_refresh),
+            publisher=YouTubePublisher(
+                _creds("youtube"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "youtube", "YOUTUBE_ACCESS_TOKEN", "YOUTUBE_REFRESH_TOKEN")),
             transformers=[remotion_for("youtube", brand_name=BRAND_NAME)],
         ))
 
-    if "substack" in platforms and _has_creds("substack"):
+    if "substack" in platforms and _has("substack"):
         from pipeline.platforms.substack.publisher import SubstackPublisher
-        platform_configs.append(PlatformConfig(publisher=SubstackPublisher(_creds("substack"))))
+        platform_configs.append(PlatformConfig(
+            publisher=SubstackPublisher(_creds("substack"))))
 
-    if "etsy" in platforms and _has_creds("etsy"):
+    if "etsy" in platforms and _has("etsy"):
         from pipeline.platforms.etsy.publisher import EtsyPublisher
-        platform_configs.append(PlatformConfig(publisher=EtsyPublisher(_creds("etsy"))))
+        platform_configs.append(PlatformConfig(
+            publisher=EtsyPublisher(_creds("etsy"))))
 
     return Pipeline(source, shared_transformers, platform_configs, store)

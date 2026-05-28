@@ -65,12 +65,6 @@ class SubstackPublisher(BasePublisher):
         self.publication = _parse_publication(
             _c.get("SUBSTACK_PUBLICATION") or os.environ.get("SUBSTACK_PUBLICATION", "")
         )
-        self.session_token = (
-            _c.get("SUBSTACK_SESSION_TOKEN")
-            or _c.get("SUBSTACK_SID")
-            or os.environ.get("SUBSTACK_SESSION_TOKEN", "")
-            or os.environ.get("SUBSTACK_SID", "")
-        )
 
     def _base(self) -> str:
         return f"https://{self.publication}.substack.com/api/v1"

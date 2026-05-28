@@ -26,7 +26,7 @@ load_dotenv(ENV_FILE)
 LI_AUTH  = "https://www.linkedin.com/oauth/v2/authorization"
 LI_TOKEN = "https://www.linkedin.com/oauth/v2/accessToken"
 REDIRECT = "http://localhost:8080/callback"
-SCOPES   = "openid profile w_member_social"
+SCOPES   = "openid profile w_member_social r_basicprofile"
 
 CLIENT_ID     = os.getenv("LINKEDIN_CLIENT_ID") or input("LinkedIn Client ID: ").strip()
 CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET") or input("LinkedIn Client Secret: ").strip()
@@ -67,7 +67,8 @@ def exchange_code(code):
         "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
     })
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    data = resp.json()
+    return data["access_token"], data.get("refresh_token", "")
 
 
 def get_person_urn(token):
@@ -103,7 +104,7 @@ def main():
         sys.exit(1)
 
     print("Exchanging for token...")
-    token = exchange_code(auth_code)
+    token, refresh_token = exchange_code(auth_code)
     person_urn, name = get_person_urn(token)
     print(f"LinkedIn verified: {name} ({person_urn})")
 
@@ -114,6 +115,8 @@ def main():
     set_key(str(ENV_FILE), "LINKEDIN_CLIENT_SECRET",  CLIENT_SECRET)
     set_key(str(ENV_FILE), "LINKEDIN_ACCESS_TOKEN",   token)
     set_key(str(ENV_FILE), "LINKEDIN_PERSON_URN",     person_urn)
+    if refresh_token:
+        set_key(str(ENV_FILE), "LINKEDIN_REFRESH_TOKEN", refresh_token)
 
     print(f"\nSaved to {ENV_FILE}")
     print("\nVerify with: python bin/cli.py auth linkedin")

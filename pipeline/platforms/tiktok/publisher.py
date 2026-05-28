@@ -141,7 +141,7 @@ class TikTokPublisher(BasePublisher):
 
     def _init_upload(self, media_path: Path, caption: str, meta: dict = None) -> str | None:
         meta = meta or {}
-        privacy_level   = meta.get("tiktok_privacy_level", "SELF_ONLY")
+        privacy_level   = meta.get("tiktok_privacy_level", "PUBLIC_TO_EVERYONE")
         disable_comment = not meta.get("tiktok_allow_comment", False)
         disable_duet    = not meta.get("tiktok_allow_duet",    False)
         disable_stitch  = not meta.get("tiktok_allow_stitch",  False)

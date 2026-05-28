@@ -66,9 +66,11 @@ PLATFORM_ENV_KEYS: dict[str, list[str]] = {
                   "TIKTOK_ACCESS_TOKEN", "TIKTOK_OPEN_ID"],
     "bluesky":   ["BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"],
     "linkedin":  ["LINKEDIN_ACCESS_TOKEN", "LINKEDIN_PERSON_URN",
-                  "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"],
+                  "LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET",
+                  "LINKEDIN_REFRESH_TOKEN"],
     "pinterest": ["PINTEREST_ACCESS_TOKEN", "PINTEREST_BOARD_ID",
-                  "PINTEREST_CLIENT_ID", "PINTEREST_CLIENT_SECRET"],
+                  "PINTEREST_CLIENT_ID", "PINTEREST_CLIENT_SECRET",
+                  "PINTEREST_REFRESH_TOKEN"],
     "reddit":    ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"],
     "youtube":   ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET",
                   "YOUTUBE_ACCESS_TOKEN", "YOUTUBE_REFRESH_TOKEN"],
@@ -211,6 +213,13 @@ class AccountStore:
         """Returns active account credentials, or {} if none stored."""
         account = self.get_active(platform)
         return account.credentials if account else {}
+
+    def update_credentials(self, platform: str, partial: dict):
+        """Merge `partial` into the active account's credentials and save."""
+        account = self.get_active(platform)
+        if account:
+            account.credentials = {**account.credentials, **partial}
+            self._save()
 
     def snapshot_from_env(self, platform: str) -> dict:
         """Read current env vars for this platform into a credentials dict."""
