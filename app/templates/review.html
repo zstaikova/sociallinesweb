@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+{% block title %}Review — Socialline{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <div>
+    <h5 class="fw-bold mb-0">Video Review</h5>
+    <div class="text-muted small">Watch rendered videos and approve or reject before publishing</div>
+  </div>
+  <button class="btn btn-sm btn-outline-secondary" onclick="loadJobs()">
+    <i class="bi bi-arrow-clockwise"></i> Refresh
+  </button>
+</div>
+
+<div id="review-empty" class="d-none text-center py-5 text-muted">
+  <i class="bi bi-check2-circle" style="font-size:3rem;opacity:.3;"></i>
+  <div class="mt-3 fw-semibold">Nothing to review</div>
+  <div class="small mt-1">Render a new video from Sources to see it here</div>
+</div>
+
+<div id="review-list" class="d-flex flex-column gap-4"></div>
+
+<!-- Reject modal -->
+<div class="modal fade" id="rejectModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-4 border-0 shadow">
+      <div class="modal-header border-0 pb-0">
+        <h6 class="modal-title fw-bold">Reject video</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label small text-muted">Reason (optional)</label>
+        <input id="reject-reason" type="text" class="form-control form-control-sm"
+               placeholder="e.g. wrong topic, bad timing…">
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-danger" id="reject-confirm-btn" onclick="confirmReject()">Reject</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+.job-card {
+  background: #fff;
+  border-radius: 16px;
+  border: 1px solid #e5e7eb;
+  overflow: hidden;
+}
+.video-phone {
+  width: 240px;
+  flex-shrink: 0;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+.video-phone video {
+  width: 100%;
+  display: block;
+}
+.caption-tab-content {
+  white-space: pre-wrap;
+  font-size: .82rem;
+  line-height: 1.55;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.platform-tab { cursor: pointer; }
+.platform-tab.active { font-weight: 600; color: #4361ee; border-bottom: 2px solid #4361ee; }
+.platform-tab { padding: .35rem .75rem; border-bottom: 2px solid transparent; font-size: .82rem; }
+</style>
+
+<script>
+let _rejectJobId = null;
+
+async function loadJobs() {
+  const list = document.getElementById('review-list');
+  const empty = document.getElementById('review-empty');
+  list.innerHTML = '<div class="text-muted small py-3 text-center">Loading…</div>';
+  empty.classList.add('d-none');
+
+  const r = await fetch('/api/renders/review');
+  const jobs = await r.json();
+
+  list.innerHTML = '';
+  if (!jobs.length) {
+    empty.classList.remove('d-none');
+    return;
+  }
+
+  jobs.forEach(job => renderJobCard(job, list));
+}
+
+function renderJobCard(job, container) {
+  const outputs = job.outputs || [];
+  const captions = job.captions || {};
+  const primary = outputs.find(o => o.platform === 'tiktok') || outputs[0];
+
+  const meta = job.meta || {};
+  const title = meta.topic || meta.pillar || job.script_file || job.id;
+  const created = new Date(job.created_at).toLocaleString();
+
+  const card = document.createElement('div');
+  card.className = 'job-card p-4';
+  card.id = 'job-' + job.id;
+
+  // Build caption tabs
+  const platforms = Object.keys(captions);
+  let tabsHtml = platforms.map((p, i) =>
+    `<span class="platform-tab ${i===0?'active':''}" onclick="switchTab('${job.id}','${p}',this)">${_pname(p)}</span>`
+  ).join('');
+
+  let captionPanels = platforms.map((p, i) => {
+    const cap = captions[p];
+    const text = typeof cap === 'object' ? cap.caption : cap;
+    const tags = (typeof cap === 'object' && cap.hashtags) ? cap.hashtags.join(' ') : '';
+    return `<div class="caption-tab-content ${i===0?'':'d-none'}" data-tab="${p}">
+      <div>${escHtml(text || '')}</div>
+      ${tags ? `<div class="text-muted mt-2" style="font-size:.75rem;">${escHtml(tags)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  if (!platforms.length) {
+    captionPanels = '<div class="text-muted small">No captions generated</div>';
+  }
+
+  // Outputs list
+  const outputItems = outputs.map(o =>
+    `<div class="d-flex align-items-center gap-2 small text-muted">
+       <i class="bi bi-file-earmark-play"></i>
+       <span>${_pname(o.platform)}</span>
+       <span class="text-secondary">${o.dimensions}</span>
+     </div>`
+  ).join('');
+
+  card.innerHTML = `
+    <div class="d-flex gap-4 align-items-start flex-wrap">
+
+      <!-- Video player -->
+      <div class="video-phone" style="aspect-ratio:9/16;">
+        ${primary
+          ? `<video controls playsinline preload="metadata" style="width:100%;height:100%;object-fit:cover;"
+               src="/api/renders/video/${primary.id}"></video>`
+          : '<div class="d-flex align-items-center justify-content-center h-100 text-white small">No video</div>'}
+      </div>
+
+      <!-- Info + captions + actions -->
+      <div class="flex-grow-1 min-w-0" style="min-width:280px;">
+        <div class="fw-semibold mb-1">${escHtml(title)}</div>
+        <div class="text-muted small mb-3">${created} · ${outputs.length} format${outputs.length!==1?'s':''}</div>
+
+        ${outputs.length > 1 ? `
+        <div class="mb-3">
+          <div class="text-muted small fw-semibold mb-1">Formats</div>
+          <div class="d-flex flex-column gap-1">${outputItems}</div>
+        </div>` : ''}
+
+        ${platforms.length ? `
+        <div class="mb-3">
+          <div class="text-muted small fw-semibold mb-2">Captions</div>
+          <div class="d-flex gap-0 border-bottom mb-2">${tabsHtml}</div>
+          <div id="caps-${job.id}">${captionPanels}</div>
+        </div>` : ''}
+
+        <div class="d-flex gap-2 mt-3 flex-wrap">
+          <button class="btn btn-success btn-sm px-4" onclick="approveJob('${job.id}')">
+            <i class="bi bi-check-lg me-1"></i>Approve & Schedule
+          </button>
+          <button class="btn btn-outline-danger btn-sm px-3" onclick="openReject('${job.id}')">
+            <i class="bi bi-x-lg me-1"></i>Reject
+          </button>
+        </div>
+        <div id="msg-${job.id}" class="small mt-2 text-muted"></div>
+      </div>
+    </div>
+  `;
+  container.appendChild(card);
+}
+
+function switchTab(jobId, platform, el) {
+  const container = document.getElementById('caps-' + jobId);
+  container.querySelectorAll('.caption-tab-content').forEach(p => p.classList.add('d-none'));
+  container.querySelector(`[data-tab="${platform}"]`).classList.remove('d-none');
+  el.closest('.d-flex').querySelectorAll('.platform-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+}
+
+async function approveJob(jobId) {
+  const msg = document.getElementById('msg-' + jobId);
+  msg.textContent = 'Approving…';
+  const r = await fetch(`/api/renders/${jobId}/approve`, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) {
+    msg.textContent = '';
+    document.getElementById('job-' + jobId).remove();
+    if (!document.getElementById('review-list').children.length)
+      document.getElementById('review-empty').classList.remove('d-none');
+  } else {
+    msg.textContent = d.error || 'Failed';
+    msg.style.color = '#dc2626';
+  }
+}
+
+function openReject(jobId) {
+  _rejectJobId = jobId;
+  document.getElementById('reject-reason').value = '';
+  new bootstrap.Modal(document.getElementById('rejectModal')).show();
+}
+
+async function confirmReject() {
+  if (!_rejectJobId) return;
+  const reason = document.getElementById('reject-reason').value.trim();
+  bootstrap.Modal.getInstance(document.getElementById('rejectModal')).hide();
+  const msg = document.getElementById('msg-' + _rejectJobId);
+  if (msg) msg.textContent = 'Rejecting…';
+  await fetch(`/api/renders/${_rejectJobId}/reject`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({reason})
+  });
+  const card = document.getElementById('job-' + _rejectJobId);
+  if (card) card.remove();
+  if (!document.getElementById('review-list').children.length)
+    document.getElementById('review-empty').classList.remove('d-none');
+  _rejectJobId = null;
+}
+
+function _pname(p) {
+  return {tiktok:'TikTok',instagram_reel:'Instagram',youtube_short:'YouTube',
+          facebook:'Facebook',x:'X',bluesky:'Bluesky',substack:'Substack',
+          telegram:'Telegram'}[p] || p;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+loadJobs();
+</script>
+{% endblock %}

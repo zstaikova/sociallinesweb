@@ -24,7 +24,7 @@ sys.path.insert(0, str(APP_DIR))
 from dotenv import load_dotenv, set_key
 load_dotenv(ROOT / ".env")
 
-from flask import Flask, render_template, request, jsonify, send_from_directory, session, redirect, abort
+from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, session, redirect, abort
 from urllib.parse import urlencode
 from pipeline.core.accounts import AccountStore
 from users import UserStore
@@ -994,6 +994,20 @@ def api_posted_delete(filename):
     if p.exists() and p.is_file():
         p.unlink()
     return jsonify({"ok": True})
+
+
+@app.route("/api/posted/clear-all", methods=["POST"])
+@login_required
+def api_posted_clear_all():
+    """Delete every file in the brand's posted directory."""
+    posted_dir = _get_posted_dir()
+    count = 0
+    if posted_dir.exists():
+        for f in posted_dir.iterdir():
+            if f.is_file():
+                f.unlink()
+                count += 1
+    return jsonify({"ok": True, "deleted": count})
 
 
 @app.route("/api/queue/<path:filename>/move-to-posted", methods=["POST"])
@@ -2211,7 +2225,36 @@ def api_schedule_generate():
                     "message": f"{count} post{'s' if count != 1 else ''} scheduled"})
 
 
+# ── Review page ───────────────────────────────────────────────────────────────
+
+@app.route("/review")
+@login_required
+def page_review():
+    return render_template("review.html")
+
+
 # ── Render review API ─────────────────────────────────────────────────────────
+
+@app.route("/api/renders/video/<output_id>")
+@login_required
+def api_render_video(output_id):
+    """Stream an MP4 render output by output_id (not file path, for security)."""
+    b  = _get_active_brand()
+    rs = _render_store_for(b["id"])
+    with rs._conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM render_outputs WHERE id=?", (output_id,)
+        ).fetchone()
+    if not row:
+        return "Not found", 404
+    job = rs.get(row["job_id"])
+    if not job or job["brand_id"] != b["id"]:
+        return "Forbidden", 403
+    path = Path(row["file_path"])
+    if not path.exists():
+        return "File not found on disk", 404
+    return send_file(str(path), mimetype="video/mp4", conditional=True)
+
 
 @app.route("/api/renders/review", methods=["GET"])
 @login_required

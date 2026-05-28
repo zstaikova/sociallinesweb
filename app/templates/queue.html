@@ -201,6 +201,8 @@
   <span class="section-title">Posted</span>
   <span class="badge bg-success-subtle text-success border border-success-subtle ms-1"
         style="font-size:.7rem;">{{ posted|length }}</span>
+  <button class="btn btn-sm ms-2" style="font-size:.7rem;padding:1px 8px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#6b7280;"
+          onclick="clearAllPosted()" title="Remove all posted items">Clear all</button>
   <div class="section-divider"></div>
 </div>
 <div class="posted-strip">
@@ -375,6 +377,13 @@ async function deleteFile(bucket, filename, elId) {
   if (!confirm(`Delete "${filename}"?`)) return;
   await fetch(`/api/${bucket}/` + encodeURIComponent(filename), {method: 'DELETE'});
   document.getElementById(elId)?.remove();
+}
+
+async function clearAllPosted() {
+  if (!confirm('Remove all posted items from this view?')) return;
+  const r = await fetch('/api/posted/clear-all', {method: 'POST'});
+  const d = await r.json();
+  if (d.ok) document.querySelectorAll('.posted-thumb').forEach(el => el.remove());
 }
 
 // ── Upload ──────────────────────────────────────────────────────
