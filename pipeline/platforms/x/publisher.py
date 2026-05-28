@@ -58,7 +58,7 @@ class XPublisher(BasePublisher):
             )
 
             if resp.data:
-                item.metadata["x_tweet_id"] = resp.data["id"]
+                item.metadata["x_post_id"] = resp.data["id"]
                 item.posted_at = datetime.utcnow()
                 return True
 
