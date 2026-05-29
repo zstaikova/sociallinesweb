@@ -24,6 +24,17 @@ sys.path.insert(0, str(APP_DIR))
 from dotenv import load_dotenv, set_key
 load_dotenv(ROOT / ".env")
 
+# Load ACCOUNT_MASTER_KEY from Windows Credential Manager if not already in env.
+# This keeps the master key out of any text file on disk.
+if not os.environ.get("ACCOUNT_MASTER_KEY"):
+    try:
+        import keyring as _kr
+        _mk = _kr.get_password("socialline", "ACCOUNT_MASTER_KEY")
+        if _mk:
+            os.environ["ACCOUNT_MASTER_KEY"] = _mk
+    except Exception:
+        pass
+
 import time
 import hmac
 import hashlib
