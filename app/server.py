@@ -24,7 +24,12 @@ sys.path.insert(0, str(APP_DIR))
 from dotenv import load_dotenv, set_key
 load_dotenv(ROOT / ".env")
 
+import time
+import hmac
+import hashlib
 from flask import Flask, render_template, request, jsonify, send_from_directory, send_file, session, redirect, abort
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from urllib.parse import urlencode
 from pipeline.core.accounts import AccountStore
 from users import UserStore
@@ -70,10 +75,20 @@ _detected_encoder:    str  = None   # cached after first probe
 def _get_active_brand() -> "dict | None":
     try:
         from flask import session as _sess
-        bid = _sess.get("active_brand_id")
+        bid  = _sess.get("active_brand_id")
+        user = _sess.get("user")
+        role = _sess.get("role")
     except RuntimeError:
         return None
-    return _brand_store.get(bid) if bid else None
+    if not bid:
+        return None
+    brand = _brand_store.get(bid)
+    if not brand:
+        return None
+    # Defense-in-depth ownership check on every access
+    if role != "admin" and brand.get("owner_username") != user:
+        return None
+    return brand
 
 
 def _brand_dir_for(brand_id: str) -> Path:
@@ -167,7 +182,7 @@ def _load_brand_video_config(brand_id: str) -> dict:
 def _acct_store_for(brand_id: str) -> AccountStore:
     if brand_id not in _brand_acct_stores:
         accts_file = _brand_dir_for(brand_id) / "accounts.enc"
-        _brand_acct_stores[brand_id] = AccountStore(accts_file)
+        _brand_acct_stores[brand_id] = AccountStore(accts_file, brand_id=brand_id)
     return _brand_acct_stores[brand_id]
 
 
@@ -219,6 +234,21 @@ def _all_brand_puller_data():
 
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
+
+def _audit(action: str, brand_id: str = None, platform: str = None, detail: str = None):
+    """Log an audit event for the current session user."""
+    try:
+        user = session.get("user")
+        uid  = (_user_store.get(user) or {}).get("id") if user else None
+        _user_store.log(
+            action=action, username=user, user_id=uid,
+            brand_id=brand_id or session.get("active_brand_id"),
+            platform=platform, detail=detail,
+            ip=request.remote_addr,
+        )
+    except Exception:
+        pass
+
 
 def _ensure_secret_key():
     """Generate and persist a Flask secret key if not already set."""
@@ -276,204 +306,152 @@ def not_reviewer(f):
         return f(*args, **kwargs)
     return decorated
 
-# ── Platform definitions for setup wizard ─────────────────────
+# ── Platform definitions for setup wizard ─────────────────────────────────────
+# All app-level credentials (Client ID, Secret, API Key) live in server .env.
+# Customers only ever click Connect — they never enter developer credentials.
 SETUP_PLATFORMS = [
-    {
-        "id": "reddit", "name": "Reddit", "icon": "bi-reddit", "color": "#ff4500",
-        "note": "Content source — required to pull memes from Reddit",
-        "type": "manual",
-        "keys_required": ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"],
-        "form_fields": [
-            {"key": "REDDIT_CLIENT_ID",     "label": "Client ID",     "help": "Found under your app name at reddit.com/prefs/apps"},
-            {"key": "REDDIT_CLIENT_SECRET", "label": "Password", "type": "password"},
-        ],
-        "steps": [
-            ("Go to", "https://www.reddit.com/prefs/apps"),
-            ("Click 'create another app' → choose", "script type"),
-            ("Set redirect URI to", "http://localhost:8080"),
-            ("Copy Client ID (under app name) and Secret", ""),
-        ],
-        "auth_script": None,
-        "verify_cmd": "reddit",
-    },
     {
         "id": "facebook", "name": "Facebook", "icon": "bi-facebook", "color": "#1877f2",
         "note": "Required for Facebook posts + image hosting for Instagram & Threads",
         "type": "oauth",
         "keys_required": ["FACEBOOK_PAGE_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "FACEBOOK_APP_ID",     "label": "App ID"},
-            {"key": "FACEBOOK_APP_SECRET", "label": "App Secret", "type": "password"},
-        ],
         "steps": [
-            ("Go to", "https://developers.facebook.com → My Apps → Create App"),
-            ("Choose Business type, add Pages product", ""),
-            ("Get App ID and Secret from Basic Settings", ""),
-            ("Enter them below, then click Launch Auth", ""),
+            ("Click Connect and log in with the Facebook account", "that manages your Page"),
+            ("Grant the requested permissions — Page posting is required", ""),
         ],
-        "auth_script": "bin/auth/facebook.py",
+        "auth_script": None,
         "verify_cmd": "facebook",
     },
     {
         "id": "instagram", "name": "Instagram", "icon": "bi-instagram", "color": "#e1306c",
-        "note": "Uses your Facebook app — connect Facebook first",
+        "note": "Uses your Facebook Page — connect Facebook first",
         "type": "derived",
         "keys_required": ["INSTAGRAM_ACCOUNT_ID"],
         "auth_script": "bin/auth/instagram_direct.py",
         "steps": [
-            ("Connect Facebook first (same app, same credentials)", ""),
-            ("Make sure your Instagram Business account is linked to your Facebook Page", ""),
-            ("Click Detect below — we'll find your Instagram account automatically", ""),
+            ("Connect Facebook first", ""),
+            ("Link your Instagram Business account to your Facebook Page", ""),
+            ("Click Detect — we'll find your Instagram account automatically", ""),
         ],
     },
     {
         "id": "threads", "name": "Threads", "icon": "bi-threads", "color": "#000000",
-        "note": "Requires Facebook to be configured first",
+        "note": "Connect with your Threads account",
         "type": "oauth",
         "keys_required": ["THREADS_ACCESS_TOKEN", "THREADS_USER_ID"],
-        "prereq_fields": [
-            {"key": "THREADS_APP_ID",     "label": "Threads App ID"},
-            {"key": "THREADS_APP_SECRET", "label": "App Secret", "type": "password"},
-            {"key": "THREADS_USER_ID",    "label": "Threads User ID", "help": "Your numeric Threads user ID — found after completing OAuth"},
-        ],
         "steps": [
-            ("Create a Meta app with Threads permissions", "https://developers.facebook.com"),
-            ("Add threads_basic and threads_content_publish scopes", ""),
-            ("Enter App ID and Secret below, then click Launch Auth", ""),
+            ("Click Connect and log in with your Threads/Instagram account", ""),
+            ("Approve the permissions", ""),
         ],
-        "auth_script": "bin/auth/threads.py",
+        "auth_script": None,
         "verify_cmd": "threads",
     },
     {
         "id": "bluesky", "name": "Bluesky", "icon": "bi-cloud", "color": "#0085ff",
-        "note": "Easiest to set up — no app review needed",
+        "note": "Enter your handle and an app password — no developer account needed",
         "type": "manual",
         "keys_required": ["BLUESKY_HANDLE", "BLUESKY_APP_PASSWORD"],
         "form_fields": [
-            {"key": "BLUESKY_HANDLE",       "label": "Handle",       "placeholder": "yourname.bsky.social"},
+            {"key": "BLUESKY_HANDLE",       "label": "Handle", "placeholder": "yourname.bsky.social"},
             {"key": "BLUESKY_APP_PASSWORD", "label": "App Password", "type": "password",
-             "help": "Generate at bsky.app/settings/app-passwords"},
+             "help": "Generate at bsky.app/settings/app-passwords — use a dedicated app password, not your login password"},
         ],
         "steps": [
-            ("Go to", "https://bsky.app/settings/app-passwords"),
-            ("Click Add App Password, name it 'sociallines'", ""),
-            ("Copy the password (xxxx-xxxx-xxxx-xxxx format)", ""),
+            ("Go to bsky.app → Settings → App Passwords", ""),
+            ("Click Add App Password, name it 'sociallines', copy the value", ""),
         ],
         "auth_script": None,
         "verify_cmd": "bluesky",
     },
     {
         "id": "linkedin", "name": "LinkedIn", "icon": "bi-linkedin", "color": "#0a66c2",
-        "note": "Posts to your personal LinkedIn profile",
+        "note": "Posts to your LinkedIn profile",
         "type": "oauth",
         "keys_required": ["LINKEDIN_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "LINKEDIN_CLIENT_ID",     "label": "Client ID"},
-            {"key": "LINKEDIN_CLIENT_SECRET", "label": "Client Secret", "type": "password"},
-        ],
         "steps": [
-            ("Go to", "https://www.linkedin.com/developers/apps → Create App"),
-            ("Add OAuth scopes:", "w_member_social, openid, profile"),
-            ("Set redirect URI to", "http://localhost:8080/callback"),
-            ("Enter credentials below, then click Launch Auth", ""),
+            ("Click Connect and log in with your LinkedIn account", ""),
+            ("Approve the permissions", ""),
         ],
-        "auth_script": "bin/auth/linkedin.py",
+        "auth_script": None,
         "verify_cmd": "linkedin",
     },
     {
         "id": "pinterest", "name": "Pinterest", "icon": "bi-pinterest", "color": "#e60023",
-        "note": "Posts to a Pinterest board of your choice",
+        "note": "Posts to your first Pinterest board",
         "type": "oauth",
         "keys_required": ["PINTEREST_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "PINTEREST_CLIENT_ID",     "label": "App ID"},
-            {"key": "PINTEREST_CLIENT_SECRET", "label": "App Secret", "type": "password"},
-        ],
         "steps": [
-            ("Go to", "https://developers.pinterest.com → My Apps → Create App"),
-            ("Add scopes:", "boards:read, pins:write, user_accounts:read"),
-            ("Set redirect URI to", "http://localhost:8080/callback"),
-            ("Enter credentials below, then click Launch Auth", ""),
+            ("Click Connect and log in with your Pinterest account", ""),
+            ("Approve the permissions — your first board will be used by default", ""),
         ],
-        "auth_script": "bin/auth/pinterest.py",
+        "auth_script": None,
         "verify_cmd": "pinterest",
     },
     {
         "id": "tiktok", "name": "TikTok", "icon": "bi-tiktok", "color": "#010101",
-        "note": "Requires TikTok app certification (Content Posting API)",
+        "note": "Connect your TikTok account",
         "type": "oauth",
         "keys_required": ["TIKTOK_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "TIKTOK_CLIENT_KEY",    "label": "Client Key"},
-            {"key": "TIKTOK_CLIENT_SECRET", "label": "Client Secret", "type": "password"},
-        ],
         "steps": [
-            ("Go to", "https://developers.tiktok.com → Manage Apps → Create App"),
-            ("Apply for Content Posting API (requires review)", ""),
-            ("Enter credentials below, then click Launch Auth after approval", ""),
+            ("Click Connect and log in with your TikTok account", ""),
+            ("Approve the Content Posting permission", ""),
         ],
         "auth_script": "bin/auth/tiktok.py",
         "verify_cmd": "tiktok",
     },
     {
         "id": "telegram", "name": "Telegram", "icon": "bi-telegram", "color": "#229ed9",
-        "note": "Posts to a Telegram channel via Bot API — no app review needed",
+        "note": "Posts to a Telegram channel via Bot API",
         "type": "manual",
         "keys_required": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"],
-        "prereq_fields": [
+        "form_fields": [
             {"key": "TELEGRAM_BOT_TOKEN", "label": "Bot Token", "type": "password",
              "help": "Create via @BotFather → /newbot → copy the token"},
-        ],
-        "form_fields": [
             {"key": "TELEGRAM_CHAT_ID", "label": "Channel ID",
-             "help": "Forward a message from your channel to @getidsbot — copy the numeric ID (starts with -100)"},
+             "help": "Forward a channel message to @getidsbot — copy the ID (starts with -100)"},
         ],
         "steps": [
-            ("Open Telegram, message", "@BotFather"),
-            ("Send /newbot, follow the steps, copy the token", ""),
+            ("Message @BotFather on Telegram → /newbot → copy the token", ""),
             ("Add the bot as admin to your channel (Post Messages permission)", ""),
-            ("Get channel ID: forward a channel message to", "@getidsbot"),
+            ("Get channel ID: forward any channel message to @getidsbot", ""),
         ],
         "auth_script": None,
         "verify_cmd": "telegram",
     },
     {
         "id": "youtube", "name": "YouTube", "icon": "bi-youtube", "color": "#ff0000",
-        "note": "Posts videos as YouTube Shorts to your channel",
+        "note": "Posts videos as YouTube Shorts",
         "type": "oauth",
         "keys_required": ["YOUTUBE_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "YOUTUBE_CLIENT_ID",     "label": "Client ID"},
-            {"key": "YOUTUBE_CLIENT_SECRET", "label": "Client Secret", "type": "password"},
-        ],
         "steps": [
-            ("Go to", "https://console.cloud.google.com → APIs & Services → Credentials"),
-            ("Create a project, enable YouTube Data API v3", ""),
-            ("Create OAuth 2.0 Client ID → choose Desktop app", ""),
-            ("Add redirect URI:", "http://localhost:8080/callback"),
-            ("Enter credentials below, then click Launch Auth", ""),
+            ("Click Connect and log in with your Google account", ""),
+            ("Approve YouTube upload permissions", ""),
         ],
         "auth_script": None,
         "verify_cmd": "youtube",
     },
     {
         "id": "x", "name": "X (Twitter)", "icon": "bi-twitter-x", "color": "#000000",
-        "note": "Requires X Developer account — enter Consumer Key/Secret, then authorize",
+        "note": "Connect your X account to post tweets",
         "type": "oauth",
         "keys_required": ["X_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "X_CONSUMER_KEY",    "label": "Consumer Key (API Key)"},
-            {"key": "X_CONSUMER_SECRET", "label": "Consumer Secret (API Key Secret)", "type": "password"},
-        ],
         "steps": [
-            ("Go to", "https://developer.twitter.com → Projects & Apps → your app"),
-            ("Under User authentication settings set permissions to Read and Write", ""),
-            ("Set callback URL to", "https://app.socialline.space/callback"),
-            ("Copy Consumer Key and Secret from Keys and Tokens", ""),
-            ("Enter them below, then click Authorize with X", ""),
+            ("Click Connect and log in with your X account", ""),
+            ("Approve the permissions", ""),
         ],
         "auth_script": None,
         "verify_cmd": "x",
+    },
+    {
+        "id": "reddit", "name": "Reddit", "icon": "bi-reddit", "color": "#ff4500",
+        "note": "Content source — pulls posts from subreddits",
+        "type": "oauth",
+        "keys_required": ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"],
+        "steps": [
+            ("Click Connect and log in with your Reddit account", ""),
+        ],
+        "auth_script": None,
+        "verify_cmd": "reddit",
     },
 
     # ── Content Platforms ────────────────────────────────────────────────────
@@ -508,20 +486,17 @@ SETUP_PLATFORMS = [
         "section": "selling",
         "type": "oauth",
         "keys_required": ["ETSY_ACCESS_TOKEN"],
-        "prereq_fields": [
-            {"key": "ETSY_API_KEY",   "label": "API Key (Keystring)",
-             "help": "From your Etsy app at etsy.com/developers"},
-            {"key": "ETSY_SHOP_ID",   "label": "Shop ID",
-             "help": "Numeric ID from your Etsy shop URL (etsy.com/shop/YourShop — check your browser for the ID)"},
-            {"key": "ETSY_DEFAULT_PRICE",       "label": "Default listing price (USD)", "placeholder": "9.99"},
+        "form_fields": [
+            {"key": "ETSY_SHOP_ID", "label": "Shop ID",
+             "help": "Numeric ID from your Etsy shop URL — find it at etsy.com/shop/YourShop in the browser address bar"},
+            {"key": "ETSY_DEFAULT_PRICE", "label": "Default listing price (USD)", "placeholder": "9.99"},
             {"key": "ETSY_DEFAULT_TAXONOMY_ID", "label": "Category ID", "placeholder": "2078",
-             "help": "Category taxonomy ID — 2078 = Photography. Browse categories at openapi.etsy.com/v3/application/seller-taxonomy/nodes"},
+             "help": "Taxonomy ID for your product category — 2078 = Photography. Optional, can be set later."},
         ],
         "steps": [
-            ("Go to", "https://www.etsy.com/developers/register → Register an app"),
-            ("Set callback URL to", "https://app.socialline.space/callback"),
-            ("Enter your API Key, Shop ID, and defaults above, then click Connect", ""),
-            ("Listings are created as drafts — review and publish from your Etsy dashboard", ""),
+            ("Click Connect and log in with your Etsy account", ""),
+            ("Approve the permissions — your shop will be linked automatically", ""),
+            ("Optionally set your Shop ID and listing defaults below", ""),
         ],
         "auth_script": None,
         "verify_cmd": "etsy",
@@ -638,7 +613,9 @@ SETUP_PLATFORMS = [
 _oauth_processes      = {}  # platform_id → subprocess
 _oauth_account_counts = {}  # platform_id → account count at time OAuth was launched
 _oauth_env_had_tokens = {}  # platform_id → bool: did .env already have tokens when OAuth launched
-_web_oauth            = {}  # platform_id → {state, done, code, error} for Flask-native flows
+# state_token → {platform, brand_id, user, expires, done, code, error, ...}
+# Keyed by state token (not platform) so multiple concurrent flows are safe
+_web_oauth: dict[str, dict] = {}
 
 
 def _platform_status_env_only(p):
@@ -655,8 +632,19 @@ def _platform_status(p):
     return _platform_status_env_only(p)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB — enough for video
+app.config["MAX_CONTENT_LENGTH"]      = 500 * 1024 * 1024  # 500 MB
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"]   = False  # set True when serving over HTTPS only
+app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24 hours
 app.secret_key = _ensure_secret_key()
+
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 # Trust Cloudflare's forwarded headers so Flask generates correct https:// URLs
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -745,21 +733,28 @@ def terms():
 
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 def login():
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+        username = request.form.get("username", "").strip()[:64]
+        password = request.form.get("password", "")[:256]
         user = _user_store.authenticate(username, password)
         if user:
+            session.clear()
+            session.permanent = True
             session["user"] = user["username"]
             session["role"] = user["role"]
-            # Set active brand to user's first brand (admin sees all)
             brands = _brand_store.list_for_user(user["username"])
             if brands:
                 session["active_brand_id"] = brands[0]["id"]
+            _user_store.log("login_success", username=user["username"],
+                            user_id=user.get("id"), ip=request.remote_addr)
             next_url = request.form.get("next") or "/queue"
             return redirect(next_url)
+        # Same message for wrong user AND wrong password
+        _user_store.log("login_failure", username=username, ip=request.remote_addr,
+                        detail="bad credentials")
         error = "Invalid username or password."
     next_url = request.args.get("next", "")
     return render_template("login.html", error=error, next=next_url)
@@ -1282,60 +1277,109 @@ def api_setup_save_keys():
     if not platform_id or not keys:
         return jsonify({"error": "platform_id and keys required"}), 400
 
-    if not ENV_FILE.exists():
-        ENV_FILE.write_text("")
-
-    for k, v in keys.items():
-        if v:
-            set_key(str(ENV_FILE), k, v)
-
-    load_dotenv(ENV_FILE, override=True)
-
     p = next((x for x in SETUP_PLATFORMS if x["id"] == platform_id), None)
-    configured = _platform_status(p) if p else False
+    if not p:
+        return jsonify({"error": "Unknown platform"}), 404
+
+    brand = _get_active_brand()
+    if not brand:
+        return jsonify({"error": "No active brand"}), 400
+
+    acct  = _acct_store_for(brand["id"])
+    creds = {k: v for k, v in keys.items() if v}
+
+    active = acct.get_active(platform_id)
+    if active:
+        # OAuth-connected platform: merge extra settings into existing account
+        acct.update_credentials(platform_id, creds)
+    else:
+        # Manual platform: create new account entry from credentials
+        name_key = next(
+            (k for k in creds if any(t in k.lower() for t in
+             ("handle", "publication", "shop_id", "chat_id", "email"))),
+            None,
+        )
+        account_name = str(creds[name_key]) if name_key else platform_id
+        acct.add(platform_id, account_name, account_name, creds)
+
+    configured = _platform_status(p)
     return jsonify({"ok": True, "configured": configured})
+
+
+def _oauth_callback_url() -> str:
+    """Returns the correct callback URL depending on environment."""
+    if request.host.startswith("localhost") or request.host.startswith("127."):
+        return f"http://{request.host}/callback"
+    return "https://app.socialline.space/callback"
+
+
+def _new_oauth_state(platform: str, brand_id: str, user: str, **extra) -> str:
+    """Register a new OAuth flow state and return the state token."""
+    state = secrets.token_urlsafe(32)
+    _web_oauth[state] = {
+        "platform": platform,
+        "brand_id": brand_id,
+        "user":     user,
+        "expires":  time.time() + 600,
+        "done":     False,
+        **extra,
+    }
+    return state
+
+
+def _resolve_oauth_state(state: str) -> "dict | None":
+    """Look up and validate a state token. Returns data dict or None."""
+    data = _web_oauth.get(state)
+    if not data:
+        return None
+    if time.time() > data.get("expires", 0):
+        _web_oauth.pop(state, None)
+        return None
+    return data
 
 
 @app.route("/callback")
 def oauth_web_callback():
-    """Flask-native OAuth callback — handles OAuth 1.0a (X) and OAuth 2.0 (Threads etc.)."""
+    """Unified OAuth callback for all platforms."""
     oauth_token    = request.args.get("oauth_token")
     oauth_verifier = request.args.get("oauth_verifier")
     state          = request.args.get("state", "")
     code           = request.args.get("code")
-    error          = request.args.get("error")
+    error_msg      = request.args.get("error")
 
     if oauth_token and oauth_verifier:
-        # OAuth 1.0a callback (X/Twitter)
-        data = _web_oauth.get("x", {})
-        data["done"] = True
-        _web_oauth["x"] = data
-        try:
-            _x_exchange_and_save(oauth_token, oauth_verifier)
-        except Exception as e:
-            _web_oauth["x"]["exchange_error"] = str(e)
+        # OAuth 1.0a (X/Twitter)
+        flow = next((d for d in _web_oauth.values()
+                     if d.get("platform") == "x" and not d.get("done")), None)
+        if flow:
+            flow["done"] = True
+            try:
+                _x_exchange_and_save(oauth_token, oauth_verifier, flow)
+            except Exception as e:
+                flow["exchange_error"] = str(e)
     else:
-        # OAuth 2.0 callback (Threads, etc.)
-        matched = next((pid for pid, d in _web_oauth.items() if d.get("state") == state), None)
-        if matched:
-            _web_oauth[matched]["code"]  = code
-            _web_oauth[matched]["error"] = error
-            _web_oauth[matched]["done"]  = True
-            if code and matched == "threads":
+        flow = _resolve_oauth_state(state)
+        if flow:
+            flow["code"]  = code
+            flow["error"] = error_msg
+            flow["done"]  = True
+            if code:
+                platform = flow.get("platform")
                 try:
-                    _threads_exchange_and_save(code)
+                    if platform == "threads":
+                        _threads_exchange_and_save(code, flow)
+                    elif platform == "youtube":
+                        _youtube_exchange_and_save(code, flow)
+                    elif platform == "etsy":
+                        _etsy_exchange_and_save(code, flow)
+                    elif platform == "facebook":
+                        _facebook_exchange_and_save(code, flow)
+                    elif platform == "linkedin":
+                        _linkedin_exchange_and_save(code, flow)
+                    elif platform == "pinterest":
+                        _pinterest_exchange_and_save(code, flow)
                 except Exception as e:
-                    _web_oauth[matched]["exchange_error"] = str(e)
-            elif code and matched == "youtube":
-                try:
-                    _youtube_exchange_and_save(code)
-                except Exception as e:
-                    _web_oauth[matched]["exchange_error"] = str(e)
-            elif code and matched == "etsy":
-                try:
-                    _etsy_exchange_and_save(code)
-                except Exception as e:
-                    _web_oauth[matched]["exchange_error"] = str(e)
+                    flow["exchange_error"] = str(e)
 
     return """<!doctype html><html><body style='font-family:sans-serif;text-align:center;padding:4rem'>
         <h2 style='color:#7C3AED'>&#10003; Authorized!</h2>
@@ -1343,88 +1387,195 @@ def oauth_web_callback():
     </body></html>"""
 
 
-def _youtube_exchange_and_save(code: str):
+# ── Per-platform exchange functions — save to AccountStore, not .env ─────────
+
+def _youtube_exchange_and_save(code: str, flow: dict):
     import requests as _req
     client_id     = os.getenv("YOUTUBE_CLIENT_ID") or ""
     client_secret = os.getenv("YOUTUBE_CLIENT_SECRET") or ""
-    redirect      = "https://app.socialline.space/callback"
+    redirect      = _oauth_callback_url() if request else "https://app.socialline.space/callback"
     resp = _req.post("https://oauth2.googleapis.com/token", data={
-        "code":          code,
-        "client_id":     client_id,
-        "client_secret": client_secret,
-        "redirect_uri":  redirect,
-        "grant_type":    "authorization_code",
+        "code": code, "client_id": client_id, "client_secret": client_secret,
+        "redirect_uri": redirect, "grant_type": "authorization_code",
     }, timeout=15)
     resp.raise_for_status()
     tokens        = resp.json()
     access_token  = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
     if not refresh_token:
-        raise ValueError("No refresh token returned — revoke app access at myaccount.google.com/permissions and try again")
-    if not ENV_FILE.exists():
-        ENV_FILE.write_text("")
-    set_key(str(ENV_FILE), "YOUTUBE_ACCESS_TOKEN",  access_token)
-    set_key(str(ENV_FILE), "YOUTUBE_REFRESH_TOKEN", refresh_token)
-    load_dotenv(ENV_FILE, override=True)
+        raise ValueError("No refresh token — revoke at myaccount.google.com/permissions and retry")
+    acct = _acct_store_for(flow["brand_id"])
+    acct.add("youtube", "YouTube", "youtube",
+             {"YOUTUBE_ACCESS_TOKEN": access_token, "YOUTUBE_REFRESH_TOKEN": refresh_token,
+              "YOUTUBE_CLIENT_ID": client_id, "YOUTUBE_CLIENT_SECRET": client_secret})
 
 
-def _x_exchange_and_save(oauth_token: str, oauth_verifier: str):
+def _x_exchange_and_save(oauth_token: str, oauth_verifier: str, flow: dict):
     import tweepy as _tweepy
-    handler = (_web_oauth.get("x") or {}).get("handler")
-    if not handler:
-        consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
-        consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""
-        handler = _tweepy.OAuth1UserHandler(consumer_key, consumer_secret)
+    consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
+    consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""
+    handler = flow.get("handler") or _tweepy.OAuth1UserHandler(consumer_key, consumer_secret)
     handler.request_token = {"oauth_token": oauth_token, "oauth_token_secret": ""}
     access_token, access_token_secret = handler.get_access_token(oauth_verifier)
-    if not ENV_FILE.exists():
-        ENV_FILE.write_text("")
-    set_key(str(ENV_FILE), "X_ACCESS_TOKEN",        access_token)
-    set_key(str(ENV_FILE), "X_ACCESS_TOKEN_SECRET", access_token_secret)
-    load_dotenv(ENV_FILE, override=True)
+    # Get the account's screen name
+    try:
+        client = _tweepy.Client(
+            consumer_key=consumer_key, consumer_secret=consumer_secret,
+            access_token=access_token, access_token_secret=access_token_secret,
+        )
+        me = client.get_me()
+        handle = f"@{me.data.username}" if me and me.data else "X Account"
+        uid    = str(me.data.id) if me and me.data else "x"
+    except Exception:
+        handle, uid = "X Account", "x"
+    acct = _acct_store_for(flow["brand_id"])
+    acct.add("x", handle, uid,
+             {"X_ACCESS_TOKEN": access_token, "X_ACCESS_TOKEN_SECRET": access_token_secret})
 
 
-def _threads_exchange_and_save(code: str):
+def _threads_exchange_and_save(code: str, flow: dict):
     import requests as _req
     app_id     = os.getenv("THREADS_APP_ID") or ""
     app_secret = os.getenv("THREADS_APP_SECRET") or ""
-    redirect   = "https://app.socialline.space/callback"
-    # Short-lived token
+    redirect   = _oauth_callback_url() if request else "https://app.socialline.space/callback"
     resp = _req.post("https://graph.threads.net/oauth/access_token", data={
         "client_id": app_id, "client_secret": app_secret,
-        "grant_type": "authorization_code",
-        "redirect_uri": redirect, "code": code,
+        "grant_type": "authorization_code", "redirect_uri": redirect, "code": code,
     }, timeout=15)
     resp.raise_for_status()
-    data       = resp.json()
-    short_tok  = data["access_token"]
-    user_id    = str(data["user_id"])
-    # Long-lived token
+    data      = resp.json()
+    short_tok = data["access_token"]
+    user_id   = str(data["user_id"])
     resp2 = _req.get("https://graph.threads.net/v1.0/access_token", params={
-        "grant_type": "th_exchange_token",
-        "client_secret": app_secret,
+        "grant_type": "th_exchange_token", "client_secret": app_secret,
         "access_token": short_tok,
     }, timeout=15)
     resp2.raise_for_status()
     long_tok = resp2.json()["access_token"]
-    if not ENV_FILE.exists():
-        ENV_FILE.write_text("")
-    set_key(str(ENV_FILE), "THREADS_USER_ID",      user_id)
-    set_key(str(ENV_FILE), "THREADS_ACCESS_TOKEN",  long_tok)
-    load_dotenv(ENV_FILE, override=True)
+    # Get username
+    try:
+        r3 = _req.get(f"https://graph.threads.net/v1.0/{user_id}",
+                      params={"fields": "username", "access_token": long_tok}, timeout=10)
+        handle = "@" + r3.json().get("username", user_id)
+    except Exception:
+        handle = f"Threads {user_id}"
+    # Also fetch Facebook page token for image staging (requires FB credentials in flow)
+    fb_creds = flow.get("fb_creds", {})
+    acct = _acct_store_for(flow["brand_id"])
+    creds = {"THREADS_USER_ID": user_id, "THREADS_ACCESS_TOKEN": long_tok,
+             "THREADS_APP_ID": app_id, "THREADS_APP_SECRET": app_secret}
+    creds.update(fb_creds)
+    acct.add("threads", handle, user_id, creds)
 
 
-def _etsy_exchange_and_save(code: str):
+def _facebook_exchange_and_save(code: str, flow: dict):
     import requests as _req
-    api_key   = os.getenv("ETSY_API_KEY") or ""
-    verifier  = (_web_oauth.get("etsy") or {}).get("code_verifier", "")
-    redirect  = "https://app.socialline.space/callback"
+    app_id     = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+    app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
+    redirect   = _oauth_callback_url() if request else "https://app.socialline.space/callback"
+    # Short-lived token
+    resp = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+        "client_id": app_id, "redirect_uri": redirect,
+        "client_secret": app_secret, "code": code,
+    }, timeout=15)
+    resp.raise_for_status()
+    short_tok = resp.json()["access_token"]
+    # Exchange for long-lived token
+    resp2 = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+        "grant_type": "fb_exchange_token", "client_id": app_id,
+        "client_secret": app_secret, "fb_exchange_token": short_tok,
+    }, timeout=15)
+    resp2.raise_for_status()
+    long_tok = resp2.json()["access_token"]
+    # Get pages
+    resp3 = _req.get("https://graph.facebook.com/v18.0/me/accounts",
+                     params={"access_token": long_tok}, timeout=15)
+    resp3.raise_for_status()
+    pages = resp3.json().get("data", [])
+    if not pages:
+        raise ValueError("No Facebook Pages found. Create a Page and link it to this account.")
+    page = pages[0]
+    page_id    = page["id"]
+    page_token = page["access_token"]
+    page_name  = page.get("name", "Facebook Page")
+    acct = _acct_store_for(flow["brand_id"])
+    acct.add("facebook", page_name, page_id,
+             {"FACEBOOK_PAGE_ID": page_id, "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
+              "FACEBOOK_APP_ID": app_id, "FACEBOOK_APP_SECRET": app_secret})
+    # Also store page creds in flow so Instagram/Threads can reuse
+    flow["fb_page_id"]    = page_id
+    flow["fb_page_token"] = page_token
+    flow["fb_app_id"]     = app_id
+    flow["fb_app_secret"] = app_secret
+
+
+def _linkedin_exchange_and_save(code: str, flow: dict):
+    import requests as _req
+    client_id     = os.getenv("LINKEDIN_CLIENT_ID") or ""
+    client_secret = os.getenv("LINKEDIN_CLIENT_SECRET") or ""
+    redirect      = _oauth_callback_url() if request else "https://app.socialline.space/callback"
+    resp = _req.post("https://www.linkedin.com/oauth/v2/accessToken", data={
+        "grant_type": "authorization_code", "code": code,
+        "redirect_uri": redirect, "client_id": client_id, "client_secret": client_secret,
+    }, timeout=15)
+    resp.raise_for_status()
+    tokens        = resp.json()
+    access_token  = tokens["access_token"]
+    refresh_token = tokens.get("refresh_token", "")
+    resp2 = _req.get("https://api.linkedin.com/v2/userinfo",
+                     headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+    resp2.raise_for_status()
+    info       = resp2.json()
+    person_urn = f"urn:li:person:{info['sub']}"
+    name       = info.get("name", "LinkedIn User")
+    acct = _acct_store_for(flow["brand_id"])
+    creds = {"LINKEDIN_ACCESS_TOKEN": access_token, "LINKEDIN_PERSON_URN": person_urn}
+    if refresh_token:
+        creds["LINKEDIN_REFRESH_TOKEN"] = refresh_token
+    acct.add("linkedin", name, info["sub"], creds)
+
+
+def _pinterest_exchange_and_save(code: str, flow: dict):
+    import requests as _req
+    client_id     = os.getenv("PINTEREST_CLIENT_ID") or ""
+    client_secret = os.getenv("PINTEREST_CLIENT_SECRET") or ""
+    redirect      = _oauth_callback_url() if request else "https://app.socialline.space/callback"
+    resp = _req.post("https://api.pinterest.com/v5/oauth/token",
+        auth=(client_id, client_secret),
+        data={"grant_type": "authorization_code", "code": code, "redirect_uri": redirect},
+        headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=15)
+    resp.raise_for_status()
+    tokens        = resp.json()
+    access_token  = tokens["access_token"]
+    refresh_token = tokens.get("refresh_token", "")
+    resp2 = _req.get("https://api.pinterest.com/v5/boards",
+                     headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+    resp2.raise_for_status()
+    boards = resp2.json().get("items", [])
+    if not boards:
+        raise ValueError("No boards found. Create a board on Pinterest first.")
+    board    = flow.get("selected_board") or boards[0]
+    board_id = board["id"] if isinstance(board, dict) else boards[0]["id"]
+    # Store board list for UI selection (optional future feature)
+    flow["boards"] = boards
+    resp3 = _req.get("https://api.pinterest.com/v5/user_account",
+                     headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+    username = resp3.json().get("username", "Pinterest") if resp3.ok else "Pinterest"
+    acct = _acct_store_for(flow["brand_id"])
+    creds = {"PINTEREST_ACCESS_TOKEN": access_token, "PINTEREST_BOARD_ID": board_id}
+    if refresh_token:
+        creds["PINTEREST_REFRESH_TOKEN"] = refresh_token
+    acct.add("pinterest", f"@{username}", username, creds)
+
+
+def _etsy_exchange_and_save(code: str, flow: dict):
+    import requests as _req
+    api_key  = os.getenv("ETSY_API_KEY") or ""
+    verifier = flow.get("code_verifier", "")
+    redirect = _oauth_callback_url() if request else "https://app.socialline.space/callback"
     resp = _req.post("https://api.etsy.com/v3/public/oauth/token", data={
-        "grant_type":    "authorization_code",
-        "client_id":     api_key,
-        "redirect_uri":  redirect,
-        "code":          code,
-        "code_verifier": verifier,
+        "grant_type": "authorization_code", "client_id": api_key,
+        "redirect_uri": redirect, "code": code, "code_verifier": verifier,
     }, timeout=15)
     resp.raise_for_status()
     tokens        = resp.json()
@@ -1432,118 +1583,150 @@ def _etsy_exchange_and_save(code: str):
     refresh_token = tokens.get("refresh_token")
     if not access_token:
         raise ValueError("No access token returned from Etsy")
-    if not ENV_FILE.exists():
-        ENV_FILE.write_text("")
-    set_key(str(ENV_FILE), "ETSY_ACCESS_TOKEN",  access_token)
+    acct = _acct_store_for(flow["brand_id"])
+    creds = {"ETSY_ACCESS_TOKEN": access_token}
     if refresh_token:
-        set_key(str(ENV_FILE), "ETSY_REFRESH_TOKEN", refresh_token)
-    load_dotenv(ENV_FILE, override=True)
+        creds["ETSY_REFRESH_TOKEN"] = refresh_token
+    acct.add("etsy", "Etsy Shop", "etsy", creds)
 
 
 @app.route("/api/accounts/launch-oauth/<platform_id>", methods=["POST"])
 @login_required
+@limiter.limit("20 per hour")
 def api_setup_launch_oauth(platform_id):
-    # Flask-native flow for platforms that use app.socialline.space/callback
+    brand = _get_active_brand()
+    if not brand:
+        return jsonify({"error": "No active brand"}), 400
+    brand_id = brand["id"]
+    user     = session["user"]
+    redirect = _oauth_callback_url()
+
+    if platform_id == "facebook":
+        app_id = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+        if not app_id:
+            return jsonify({"error": "Facebook app not configured on this server"}), 500
+        state = _new_oauth_state("facebook", brand_id, user)
+        params = urlencode({
+            "client_id": app_id, "redirect_uri": redirect,
+            "scope": "pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish",
+            "response_type": "code", "state": state,
+        })
+        auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
+        _oauth_account_counts["facebook"] = len(_get_acct_store().list_all("facebook"))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Log in with Facebook and grant page access."})
+
+    if platform_id == "linkedin":
+        client_id = os.getenv("LINKEDIN_CLIENT_ID") or ""
+        if not client_id:
+            return jsonify({"error": "LinkedIn app not configured on this server"}), 500
+        state = _new_oauth_state("linkedin", brand_id, user)
+        params = urlencode({
+            "response_type": "code", "client_id": client_id,
+            "redirect_uri": redirect, "state": state,
+            "scope": "openid profile w_member_social r_basicprofile",
+        })
+        auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{params}"
+        _oauth_account_counts["linkedin"] = len(_get_acct_store().list_all("linkedin"))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Authorize with your LinkedIn account."})
+
+    if platform_id == "pinterest":
+        client_id = os.getenv("PINTEREST_CLIENT_ID") or ""
+        if not client_id:
+            return jsonify({"error": "Pinterest app not configured on this server"}), 500
+        state = _new_oauth_state("pinterest", brand_id, user)
+        params = urlencode({
+            "client_id": client_id, "redirect_uri": redirect,
+            "response_type": "code",
+            "scope": "boards:read,pins:write,user_accounts:read",
+            "state": state,
+        })
+        auth_url = f"https://www.pinterest.com/oauth/?{params}"
+        _oauth_account_counts["pinterest"] = len(_get_acct_store().list_all("pinterest"))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Authorize with Pinterest — your first board will be selected."})
+
     if platform_id == "youtube":
-        import secrets as _sec
-        client_id     = os.getenv("YOUTUBE_CLIENT_ID") or ""
-        client_secret = os.getenv("YOUTUBE_CLIENT_SECRET") or ""
-        if not client_id or not client_secret:
-            return jsonify({"error": "Enter and save Client ID and Client Secret first"}), 400
-        state    = _sec.token_urlsafe(16)
-        redirect = "https://app.socialline.space/callback"
-        scopes   = " ".join([
+        client_id = os.getenv("YOUTUBE_CLIENT_ID") or ""
+        if not client_id:
+            return jsonify({"error": "YouTube app not configured on this server"}), 500
+        state = _new_oauth_state("youtube", brand_id, user)
+        scopes = " ".join([
             "https://www.googleapis.com/auth/youtube.upload",
             "https://www.googleapis.com/auth/youtube.readonly",
         ])
-        params   = urlencode({
-            "client_id":     client_id,
-            "redirect_uri":  redirect,
-            "response_type": "code",
-            "scope":         scopes,
-            "state":         state,
-            "access_type":   "offline",
-            "prompt":        "consent",
+        params = urlencode({
+            "client_id": client_id, "redirect_uri": redirect,
+            "response_type": "code", "scope": scopes, "state": state,
+            "access_type": "offline", "prompt": "consent",
         })
         auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
-        _web_oauth["youtube"] = {"state": state, "done": False}
         _oauth_account_counts["youtube"] = len(_get_acct_store().list_all("youtube"))
         return jsonify({"ok": True, "auth_url": auth_url,
-            "message": "Authorize in the browser window, then click below."})
+            "message": "Authorize with your Google account."})
 
     if platform_id == "x":
         import tweepy as _tweepy
         consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
         consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""
-        if not consumer_key or not consumer_secret:
-            return jsonify({"error": "Enter and save Consumer Key and Consumer Secret first"}), 400
+        if not consumer_key:
+            return jsonify({"error": "X app not configured on this server"}), 500
         try:
-            handler  = _tweepy.OAuth1UserHandler(
-                consumer_key, consumer_secret,
-                callback="https://app.socialline.space/callback",
-            )
+            handler  = _tweepy.OAuth1UserHandler(consumer_key, consumer_secret,
+                                                  callback=redirect)
             auth_url = handler.get_authorization_url()
-            _web_oauth["x"] = {"handler": handler, "done": False}
+            state    = _new_oauth_state("x", brand_id, user, handler=handler)
             _oauth_account_counts["x"] = len(_get_acct_store().list_all("x"))
             return jsonify({"ok": True, "auth_url": auth_url,
-                "message": "Authorize in the browser window, then click below."})
+                "message": "Authorize with your X/Twitter account."})
         except Exception as e:
             return jsonify({"error": f"Failed to start X auth: {e}"}), 500
 
     if platform_id == "threads":
-        import secrets as _sec
-        p = next((x for x in SETUP_PLATFORMS if x["id"] == platform_id), None)
         app_id = os.getenv("THREADS_APP_ID") or ""
         if not app_id:
-            return jsonify({"error": "THREADS_APP_ID not set — enter it in the form fields first"}), 400
-        state    = _sec.token_urlsafe(16)
-        redirect = "https://app.socialline.space/callback"
-        params   = urlencode({
+            return jsonify({"error": "Threads app not configured on this server"}), 500
+        state = _new_oauth_state("threads", brand_id, user)
+        params = urlencode({
             "client_id": app_id, "redirect_uri": redirect,
             "scope": "threads_basic,threads_content_publish",
             "response_type": "code", "state": state,
         })
         auth_url = f"https://threads.net/oauth/authorize?{params}"
-        _web_oauth[platform_id] = {"state": state, "done": False}
-        _oauth_account_counts[platform_id] = len(_get_acct_store().list_all(platform_id))
+        _oauth_account_counts["threads"] = len(_get_acct_store().list_all("threads"))
         return jsonify({"ok": True, "auth_url": auth_url,
-            "message": "Authorize in the browser window, then click below."})
+            "message": "Authorize with your Threads account."})
 
     if platform_id == "etsy":
-        import secrets as _sec, hashlib as _hash, base64 as _b64
-        api_key = os.getenv("ETSY_API_KEY") or ""
+        import hashlib as _hash, base64 as _b64
+        api_key  = os.getenv("ETSY_API_KEY") or ""
         if not api_key:
-            return jsonify({"error": "Enter and save your Etsy API Key first"}), 400
-        # PKCE
-        verifier  = _sec.token_urlsafe(43)
+            return jsonify({"error": "Etsy app not configured on this server"}), 500
+        verifier  = secrets.token_urlsafe(43)
         digest    = _hash.sha256(verifier.encode()).digest()
         challenge = _b64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-        state     = _sec.token_urlsafe(16)
-        redirect  = "https://app.socialline.space/callback"
+        state     = _new_oauth_state("etsy", brand_id, user, code_verifier=verifier)
         params    = urlencode({
-            "response_type":         "code",
-            "redirect_uri":          redirect,
-            "scope":                 "listings_w listings_r shops_r",
-            "client_id":             api_key,
-            "state":                 state,
-            "code_challenge":        challenge,
-            "code_challenge_method": "S256",
+            "response_type": "code", "redirect_uri": redirect,
+            "scope": "listings_w listings_r shops_r",
+            "client_id": api_key, "state": state,
+            "code_challenge": challenge, "code_challenge_method": "S256",
         })
         auth_url = f"https://www.etsy.com/oauth/connect?{params}"
-        _web_oauth["etsy"] = {"state": state, "done": False, "code_verifier": verifier}
         _oauth_account_counts["etsy"] = len(_get_acct_store().list_all("etsy"))
         return jsonify({"ok": True, "auth_url": auth_url,
-            "message": "Authorize in the browser window — your Etsy listing access will be connected."})
+            "message": "Authorize with your Etsy account."})
 
+    # Remaining platforms with auth scripts (TikTok, etc.)
     p = next((x for x in SETUP_PLATFORMS if x["id"] == platform_id), None)
     if not p or not p.get("auth_script"):
-        return jsonify({"error": "No auth script for this platform"}), 400
+        return jsonify({"error": "No auth configured for this platform"}), 400
 
     auth_script = ROOT / p["auth_script"]
     if not auth_script.exists():
         return jsonify({"error": f"Auth script not found: {p['auth_script']}"}), 404
 
-    # Kill any existing process for this platform
     existing = _oauth_processes.get(platform_id)
     if existing and existing.poll() is None:
         existing.terminate()
@@ -1551,21 +1734,14 @@ def api_setup_launch_oauth(platform_id):
     try:
         proc = subprocess.Popen(
             [sys.executable, str(auth_script)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         _oauth_processes[platform_id] = proc
-        # Snapshot state so polling can detect genuinely new tokens/accounts
         _oauth_account_counts[platform_id] = len(_get_acct_store().list_all(platform_id))
         _oauth_env_had_tokens[platform_id] = _platform_status_env_only(p)
-
-        def _stream():
-            for line in proc.stdout:
-                pass  # drain so it doesn't block
-
-        threading.Thread(target=_stream, daemon=True).start()
-        return jsonify({"ok": True, "pid": proc.pid, "message": "Auth flow started. Check your browser for the OAuth window."})
+        threading.Thread(target=lambda: [_ for _ in proc.stdout], daemon=True).start()
+        return jsonify({"ok": True, "pid": proc.pid,
+            "message": "Auth flow started. Check your browser for the OAuth window."})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1579,15 +1755,21 @@ def api_setup_status(platform_id):
     proc    = _oauth_processes.get(platform_id)
     running = proc is not None and proc.poll() is None
 
-    # Web OAuth flow (Flask-native, e.g. Threads via app.socialline.space/callback)
-    web = _web_oauth.get(platform_id)
-    if web and web.get("done"):
-        web_configured = _platform_status_env_only(p)
-        exchange_error = web.get("exchange_error")
+    # Web OAuth flow — check if any state for this platform+brand is done
+    brand = _get_active_brand()
+    brand_id = brand["id"] if brand else None
+    web = next((d for d in _web_oauth.values()
+                if d.get("platform") == platform_id
+                and d.get("brand_id") == brand_id
+                and d.get("done")), None)
+    if web:
+        acct_count     = len(_get_acct_store().list_all(platform_id))
+        web_configured = acct_count > (_oauth_account_counts.get(platform_id) or 0) or \
+                         _platform_status_env_only(p)
         return jsonify({
-            "configured": web_configured,
-            "oauth_running": False,
-            "exchange_error": exchange_error,
+            "configured":     web_configured,
+            "oauth_running":  False,
+            "exchange_error": web.get("exchange_error"),
         })
 
     baseline_count = _oauth_account_counts.get(platform_id)
