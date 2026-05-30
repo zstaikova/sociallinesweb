@@ -1565,30 +1565,64 @@ def _instagram_exchange_and_save(code: str, flow: dict):
     }, timeout=15)
     resp2.raise_for_status()
     long_tok = resp2.json()["access_token"]
+    # Get pages the user manages
     pages_resp = _req.get("https://graph.facebook.com/v18.0/me/accounts",
-                          params={"access_token": long_tok}, timeout=15)
+                          params={"access_token": long_tok, "fields": "id,name,access_token"},
+                          timeout=15)
     pages_resp.raise_for_status()
     pages = pages_resp.json().get("data", [])
-    ig_id = ig_username = page_token = None
+    if not pages:
+        # Fallback: pages owned via Business Portfolio (same as Facebook flow)
+        biz_resp = _req.get("https://graph.facebook.com/v18.0/me/businesses",
+                            params={"access_token": long_tok, "fields": "id,name"}, timeout=15)
+        if biz_resp.ok:
+            for biz in biz_resp.json().get("data", []):
+                owned = _req.get(f"https://graph.facebook.com/v18.0/{biz['id']}/owned_pages",
+                                 params={"access_token": long_tok, "fields": "id,name,access_token"},
+                                 timeout=15)
+                if owned.ok:
+                    pages.extend(owned.json().get("data", []))
+    if not pages:
+        me = _req.get("https://graph.facebook.com/v18.0/me",
+                      params={"access_token": long_tok, "fields": "id,name"}, timeout=10)
+        me_info = me.json() if me.ok else {}
+        raise ValueError(
+            f"No Facebook Pages found for {me_info.get('name', 'this account')}. "
+            "Grant page access and try again."
+        )
+    # Walk pages to find the linked Instagram account
+    ig_id = ig_username = page_token = page_id = None
     for page in pages:
         pt = page.get("access_token", "")
-        ig_resp = _req.get(f"https://graph.facebook.com/v18.0/{page['id']}",
-                           params={"fields": "instagram_business_account", "access_token": pt},
-                           timeout=10)
-        if ig_resp.ok:
-            ig_data = ig_resp.json().get("instagram_business_account")
-            if ig_data:
-                ig_id      = ig_data["id"]
-                page_id    = page["id"]
-                page_token = pt
-                info_resp  = _req.get(f"https://graph.instagram.com/v21.0/{ig_id}",
-                                      params={"fields": "id,username", "access_token": pt},
-                                      timeout=10)
-                if info_resp.ok:
-                    ig_username = info_resp.json().get("username", "")
-                break
+        # Try Business and Creator account fields
+        fields_resp = _req.get(f"https://graph.facebook.com/v18.0/{page['id']}",
+                               params={"fields": "instagram_business_account,connected_instagram_account",
+                                       "access_token": pt}, timeout=10)
+        ig_data = None
+        if fields_resp.ok:
+            body = fields_resp.json()
+            ig_data = body.get("instagram_business_account") or body.get("connected_instagram_account")
+        # Fallback: /instagram_accounts edge (Creator accounts not linked via Business Manager)
+        if not ig_data:
+            edge_resp = _req.get(f"https://graph.facebook.com/v18.0/{page['id']}/instagram_accounts",
+                                 params={"access_token": pt}, timeout=10)
+            if edge_resp.ok:
+                accts = edge_resp.json().get("data", [])
+                ig_data = accts[0] if accts else None
+        if ig_data:
+            ig_id      = ig_data["id"]
+            page_id    = page["id"]
+            page_token = pt
+            info_resp  = _req.get(f"https://graph.instagram.com/v21.0/{ig_id}",
+                                  params={"fields": "id,username", "access_token": pt}, timeout=10)
+            if info_resp.ok:
+                ig_username = info_resp.json().get("username", "")
+            break
     if not ig_id:
-        raise ValueError("No Instagram Business account found linked to your Facebook Pages.")
+        raise ValueError(
+            "No Instagram account found linked to your Facebook Pages. "
+            "Make sure your Instagram is set to Business or Creator and linked to a Page."
+        )
     acct = _acct_store_for(flow["brand_id"])
     creds = {
         "INSTAGRAM_ACCOUNT_ID":       ig_id,
@@ -1713,7 +1747,7 @@ def api_setup_launch_oauth(platform_id):
         state = _new_oauth_state("instagram", brand_id, user)
         params = urlencode({
             "client_id": app_id, "redirect_uri": redirect,
-            "scope": "pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish",
+            "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish,business_management",
             "response_type": "code", "state": state,
         })
         auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
