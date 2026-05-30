@@ -15,10 +15,10 @@ MAX_CAPTION   = 2_200
 class InstagramPublisher(BasePublisher):
     def __init__(self, credentials: dict = None, on_token_refresh=None):
         _c = credentials or {}
-        self.ig_account_id   = _c.get("INSTAGRAM_ACCOUNT_ID")      or os.environ["INSTAGRAM_ACCOUNT_ID"]
-        self.access_token    = _c.get("INSTAGRAM_ACCESS_TOKEN")     or os.environ["INSTAGRAM_ACCESS_TOKEN"]
-        self.page_id         = _c.get("FACEBOOK_PAGE_ID")           or os.environ["FACEBOOK_PAGE_ID"]
-        self.fb_page_token   = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
+        self.ig_account_id   = _c.get("INSTAGRAM_ACCOUNT_ID")      or os.environ.get("INSTAGRAM_ACCOUNT_ID", "")
+        self.access_token    = _c.get("INSTAGRAM_ACCESS_TOKEN")     or os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
+        self.page_id         = _c.get("FACEBOOK_PAGE_ID")           or os.environ.get("FACEBOOK_PAGE_ID", "")
+        self.fb_page_token   = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
         self.on_token_refresh = on_token_refresh
 
     # ── Token refresh ────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ class InstagramPublisher(BasePublisher):
 
     def get_account_info(self) -> "dict | None":
         r = self._get(
-            f"{IG_GRAPH}/{self.ig_account_id}",
+            f"{FB_GRAPH}/{self.ig_account_id}",
             params={"fields": "id,username,name", "access_token": self.access_token},
             timeout=10,
         )
@@ -146,7 +146,7 @@ class InstagramPublisher(BasePublisher):
 
     def _create_container(self, image_url: str, caption: str) -> "str | None":
         resp = self._post(
-            f"{IG_GRAPH}/{self.ig_account_id}/media",
+            f"{FB_GRAPH}/{self.ig_account_id}/media",
             data={"image_url": image_url, "caption": caption,
                   "access_token": self.access_token},
             timeout=30,
@@ -158,7 +158,7 @@ class InstagramPublisher(BasePublisher):
 
     def _publish_container(self, container_id: str) -> "str | None":
         resp = self._post(
-            f"{IG_GRAPH}/{self.ig_account_id}/media_publish",
+            f"{FB_GRAPH}/{self.ig_account_id}/media_publish",
             data={"creation_id": container_id, "access_token": self.access_token},
             timeout=30,
         )

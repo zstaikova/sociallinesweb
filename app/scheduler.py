@@ -308,6 +308,11 @@ def _run_due_pulls(source_store, pull_engine, sched_store: ScheduleStore,
         if (now - last_dt).total_seconds() < interval_s:
             continue
 
+        # Skip if queue already has enough items
+        queue_count = len(list(queue_dir.glob("*"))) if queue_dir.exists() else 0
+        if queue_count >= 10:
+            continue
+
         # Due — pull it
         try:
             added = pull_engine.pull(source)

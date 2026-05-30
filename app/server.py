@@ -1480,12 +1480,14 @@ def _threads_exchange_and_save(code: str, flow: dict):
         handle = "@" + r3.json().get("username", user_id)
     except Exception:
         handle = f"Threads {user_id}"
-    # Also fetch Facebook page token for image staging (requires FB credentials in flow)
-    fb_creds = flow.get("fb_creds", {})
     acct = _acct_store_for(flow["brand_id"])
     creds = {"THREADS_USER_ID": user_id, "THREADS_ACCESS_TOKEN": long_tok,
              "THREADS_APP_ID": app_id, "THREADS_APP_SECRET": app_secret}
-    creds.update(fb_creds)
+    # Pull Facebook page credentials for image staging
+    fb_acct = acct.get_active("facebook")
+    if fb_acct:
+        creds["FACEBOOK_PAGE_ID"]            = fb_acct.credentials.get("FACEBOOK_PAGE_ID", "")
+        creds["FACEBOOK_PAGE_ACCESS_TOKEN"]  = fb_acct.credentials.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
     acct.add("threads", handle, user_id, creds)
 
 
@@ -1613,7 +1615,7 @@ def _instagram_exchange_and_save(code: str, flow: dict):
             ig_id      = ig_data["id"]
             page_id    = page["id"]
             page_token = pt
-            info_resp  = _req.get(f"https://graph.instagram.com/v21.0/{ig_id}",
+            info_resp  = _req.get(f"https://graph.facebook.com/v19.0/{ig_id}",
                                   params={"fields": "id,username", "access_token": pt}, timeout=10)
             if info_resp.ok:
                 ig_username = info_resp.json().get("username", "")
