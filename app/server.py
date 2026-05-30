@@ -335,15 +335,16 @@ SETUP_PLATFORMS = [
     },
     {
         "id": "instagram", "name": "Instagram", "icon": "bi-instagram", "color": "#e1306c",
-        "note": "Uses your Facebook Page — connect Facebook first",
-        "type": "derived",
+        "note": "Requires a Business or Creator Instagram account linked to your Facebook Page",
+        "type": "oauth",
         "keys_required": ["INSTAGRAM_ACCOUNT_ID"],
-        "auth_script": "bin/auth/instagram_direct.py",
         "steps": [
-            ("Connect Facebook first", ""),
-            ("Link your Instagram Business account to your Facebook Page", ""),
-            ("Click Detect — we'll find your Instagram account automatically", ""),
+            ("Connect Facebook first (above)", ""),
+            ("Make sure your Instagram is set to Business or Creator in the Instagram app", ""),
+            ("Click Connect — select your Instagram account when prompted", ""),
         ],
+        "auth_script": None,
+        "verify_cmd": "instagram",
     },
     {
         "id": "threads", "name": "Threads", "icon": "bi-threads", "color": "#000000",
@@ -1385,6 +1386,8 @@ def oauth_web_callback():
                         _etsy_exchange_and_save(code, flow)
                     elif platform == "facebook":
                         _facebook_exchange_and_save(code, flow)
+                    elif platform == "instagram":
+                        _instagram_exchange_and_save(code, flow)
                     elif platform == "linkedin":
                         _linkedin_exchange_and_save(code, flow)
                     elif platform == "pinterest":
@@ -1520,6 +1523,55 @@ def _facebook_exchange_and_save(code: str, flow: dict):
     flow["fb_app_secret"] = app_secret
 
 
+def _instagram_exchange_and_save(code: str, flow: dict):
+    import requests as _req
+    app_id     = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+    app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
+    redirect   = _oauth_callback_url() if request else "https://app.socialline.space/callback"
+    resp = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+        "client_id": app_id, "redirect_uri": redirect,
+        "client_secret": app_secret, "code": code,
+    }, timeout=15)
+    resp.raise_for_status()
+    short_tok = resp.json()["access_token"]
+    resp2 = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+        "grant_type": "fb_exchange_token", "client_id": app_id,
+        "client_secret": app_secret, "fb_exchange_token": short_tok,
+    }, timeout=15)
+    resp2.raise_for_status()
+    long_tok = resp2.json()["access_token"]
+    pages_resp = _req.get("https://graph.facebook.com/v18.0/me/accounts",
+                          params={"access_token": long_tok}, timeout=15)
+    pages_resp.raise_for_status()
+    pages = pages_resp.json().get("data", [])
+    ig_id = ig_username = page_token = None
+    for page in pages:
+        pt = page.get("access_token", "")
+        ig_resp = _req.get(f"https://graph.facebook.com/v18.0/{page['id']}",
+                           params={"fields": "instagram_business_account", "access_token": pt},
+                           timeout=10)
+        if ig_resp.ok:
+            ig_data = ig_resp.json().get("instagram_business_account")
+            if ig_data:
+                ig_id      = ig_data["id"]
+                page_token = pt
+                info_resp  = _req.get(f"https://graph.instagram.com/v21.0/{ig_id}",
+                                      params={"fields": "id,username", "access_token": pt},
+                                      timeout=10)
+                if info_resp.ok:
+                    ig_username = info_resp.json().get("username", "")
+                break
+    if not ig_id:
+        raise ValueError("No Instagram Business account found linked to your Facebook Pages.")
+    acct = _acct_store_for(flow["brand_id"])
+    creds = {
+        "INSTAGRAM_ACCOUNT_ID":       ig_id,
+        "INSTAGRAM_ACCESS_TOKEN":     page_token,
+        "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
+    }
+    acct.add("instagram", f"@{ig_username}" if ig_username else ig_id, ig_id, creds)
+
+
 def _linkedin_exchange_and_save(code: str, flow: dict):
     import requests as _req
     client_id     = os.getenv("LINKEDIN_CLIENT_ID") or ""
@@ -1619,13 +1671,28 @@ def api_setup_launch_oauth(platform_id):
         state = _new_oauth_state("facebook", brand_id, user)
         params = urlencode({
             "client_id": app_id, "redirect_uri": redirect,
-            "scope": "pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish",
+            "scope": "pages_manage_posts,pages_read_engagement",
             "response_type": "code", "state": state,
         })
         auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
         _oauth_account_counts["facebook"] = len(_get_acct_store().list_all("facebook"))
         return jsonify({"ok": True, "auth_url": auth_url,
             "message": "Log in with Facebook and grant page access."})
+
+    if platform_id == "instagram":
+        app_id = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+        if not app_id:
+            return jsonify({"error": "Facebook/Meta app not configured on this server"}), 500
+        state = _new_oauth_state("instagram", brand_id, user)
+        params = urlencode({
+            "client_id": app_id, "redirect_uri": redirect,
+            "scope": "pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish",
+            "response_type": "code", "state": state,
+        })
+        auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
+        _oauth_account_counts["instagram"] = len(_get_acct_store().list_all("instagram"))
+        return jsonify({"ok": True, "auth_url": auth_url,
+            "message": "Log in with Facebook and grant Instagram access."})
 
     if platform_id == "linkedin":
         client_id = os.getenv("LINKEDIN_CLIENT_ID") or ""
@@ -1819,9 +1886,12 @@ def api_setup_status(platform_id):
 @login_required
 def api_setup_verify(platform_id):
     load_dotenv(ENV_FILE, override=True)
-    # Credentials can be passed in POST body (manual platforms / adding a second account)
-    # or fall back to current env (after OAuth flow writes to .env)
+    # Credentials: POST body → AccountStore → .env fallback
     body_creds = (request.get_json(silent=True) or {}).get("credentials", {})
+    if not body_creds:
+        active_acct = _get_acct_store().get_active(platform_id)
+        if active_acct and active_acct.credentials:
+            body_creds = active_acct.credentials
 
     try:
         if platform_id == "instagram" and not body_creds.get("INSTAGRAM_ACCOUNT_ID"):
