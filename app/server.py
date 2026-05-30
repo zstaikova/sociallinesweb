@@ -1554,6 +1554,7 @@ def _instagram_exchange_and_save(code: str, flow: dict):
             ig_data = ig_resp.json().get("instagram_business_account")
             if ig_data:
                 ig_id      = ig_data["id"]
+                page_id    = page["id"]
                 page_token = pt
                 info_resp  = _req.get(f"https://graph.instagram.com/v21.0/{ig_id}",
                                       params={"fields": "id,username", "access_token": pt},
@@ -1567,6 +1568,7 @@ def _instagram_exchange_and_save(code: str, flow: dict):
     creds = {
         "INSTAGRAM_ACCOUNT_ID":       ig_id,
         "INSTAGRAM_ACCESS_TOKEN":     page_token,
+        "FACEBOOK_PAGE_ID":           page_id,
         "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
     }
     acct.add("instagram", f"@{ig_username}" if ig_username else ig_id, ig_id, creds)
