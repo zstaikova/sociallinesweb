@@ -1320,8 +1320,11 @@ def api_setup_save_keys():
 
 def _oauth_callback_url() -> str:
     """Returns the correct callback URL depending on environment."""
-    if request.host.startswith("localhost") or request.host.startswith("127."):
-        return f"http://{request.host}/callback"
+    host = request.host
+    if host.startswith("localhost"):
+        host = host.replace("localhost", "127.0.0.1")
+    if host.startswith("127."):
+        return f"http://{host}/callback"
     return "https://app.socialline.space/callback"
 
 
@@ -1808,6 +1811,7 @@ def api_setup_launch_oauth(platform_id):
             "message": "Authorize with your Google account."})
 
     if platform_id == "x":
+        load_dotenv(ENV_FILE, override=True)
         import tweepy as _tweepy
         consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
         consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""
@@ -2263,8 +2267,7 @@ _USER_TOKEN_KEYS: dict[str, list[str]] = {
     "facebook":  ["FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"],
     "instagram": ["INSTAGRAM_ACCOUNT_ID", "INSTAGRAM_ACCESS_TOKEN"],
     "threads":   ["THREADS_USER_ID", "THREADS_ACCESS_TOKEN"],
-    "x":         ["X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET",
-                  "X_CONSUMER_KEY", "X_CONSUMER_SECRET"],
+    "x":         ["X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"],
     "tiktok":    ["TIKTOK_ACCESS_TOKEN", "TIKTOK_OPEN_ID", "TIKTOK_REFRESH_TOKEN"],
     "substack":     ["SUBSTACK_SESSION_TOKEN", "SUBSTACK_PUBLICATION"],
     "etsy":         ["ETSY_ACCESS_TOKEN", "ETSY_REFRESH_TOKEN"],
