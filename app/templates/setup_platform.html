@@ -417,6 +417,7 @@ document.getElementById('connectBtn')?.addEventListener('click', async function(
     document.getElementById('oauthStatusText').textContent = platformId === 'tiktok'
       ? "TikTok's authorization screen is open — approve access, then return here."
       : 'Authorize in your browser, then click below.';
+    document.getElementById('saveAccountBtn').classList.remove('d-none');
     pollOAuth();
   } else {
     statusDiv.querySelector('.alert').className = 'alert alert-danger py-2 small mb-0';

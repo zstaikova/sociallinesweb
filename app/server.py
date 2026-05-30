@@ -1395,6 +1395,13 @@ def oauth_web_callback():
                 except Exception as e:
                     flow["exchange_error"] = str(e)
 
+    exchange_err = flow.get("exchange_error") if flow else None
+    if exchange_err:
+        return f"""<!doctype html><html><body style='font-family:sans-serif;text-align:center;padding:4rem'>
+            <h2 style='color:#dc3545'>&#10007; Authorization failed</h2>
+            <p style='color:#555'>{exchange_err}</p>
+            <p style='color:#888;font-size:.9em'>Close this tab and try again in Socialline.</p>
+        </body></html>"""
     return """<!doctype html><html><body style='font-family:sans-serif;text-align:center;padding:4rem'>
         <h2 style='color:#7C3AED'>&#10003; Authorized!</h2>
         <p style='color:#555'>You can close this tab and return to Socialline.</p>
@@ -1503,22 +1510,40 @@ def _facebook_exchange_and_save(code: str, flow: dict):
     long_tok = resp2.json()["access_token"]
     # Get pages
     resp3 = _req.get("https://graph.facebook.com/v18.0/me/accounts",
-                     params={"access_token": long_tok}, timeout=15)
+                     params={"access_token": long_tok, "fields": "id,name,access_token,tasks"},
+                     timeout=15)
     resp3.raise_for_status()
     pages = resp3.json().get("data", [])
     if not pages:
-        raise ValueError("No Facebook Pages found. Create a Page and link it to this account.")
-    page = pages[0]
-    page_id    = page["id"]
-    page_token = page["access_token"]
-    page_name  = page.get("name", "Facebook Page")
+        # Fallback: pages owned by user's Business Portfolios
+        biz_resp = _req.get("https://graph.facebook.com/v18.0/me/businesses",
+                            params={"access_token": long_tok, "fields": "id,name"},
+                            timeout=15)
+        if biz_resp.ok:
+            for biz in biz_resp.json().get("data", []):
+                biz_id = biz["id"]
+                pages_resp = _req.get(f"https://graph.facebook.com/v18.0/{biz_id}/owned_pages",
+                                      params={"access_token": long_tok,
+                                              "fields": "id,name,access_token"},
+                                      timeout=15)
+                if pages_resp.ok:
+                    pages.extend(pages_resp.json().get("data", []))
+    if not pages:
+        me_resp = _req.get("https://graph.facebook.com/v18.0/me",
+                           params={"access_token": long_tok, "fields": "id,name"}, timeout=10)
+        me_info = me_resp.json() if me_resp.ok else {}
+        raise ValueError(f"No Facebook Pages found for {me_info.get('name', 'this account')} ({me_info.get('id', '?')}). Grant page access and try again.")
     acct = _acct_store_for(flow["brand_id"])
-    acct.add("facebook", page_name, page_id,
-             {"FACEBOOK_PAGE_ID": page_id, "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
-              "FACEBOOK_APP_ID": app_id, "FACEBOOK_APP_SECRET": app_secret})
-    # Also store page creds in flow so Instagram/Threads can reuse
-    flow["fb_page_id"]    = page_id
-    flow["fb_page_token"] = page_token
+    for page in pages:
+        page_id    = page["id"]
+        page_token = page["access_token"]
+        page_name  = page.get("name", "Facebook Page")
+        acct.add("facebook", page_name, page_id,
+                 {"FACEBOOK_PAGE_ID": page_id, "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
+                  "FACEBOOK_APP_ID": app_id, "FACEBOOK_APP_SECRET": app_secret})
+    # Store first page in flow for Instagram/Threads reuse
+    flow["fb_page_id"]    = pages[0]["id"]
+    flow["fb_page_token"] = pages[0]["access_token"]
     flow["fb_app_id"]     = app_id
     flow["fb_app_secret"] = app_secret
 
@@ -1673,7 +1698,7 @@ def api_setup_launch_oauth(platform_id):
         state = _new_oauth_state("facebook", brand_id, user)
         params = urlencode({
             "client_id": app_id, "redirect_uri": redirect,
-            "scope": "pages_manage_posts,pages_read_engagement",
+            "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,business_management",
             "response_type": "code", "state": state,
         })
         auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"

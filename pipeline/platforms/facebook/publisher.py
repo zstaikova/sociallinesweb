@@ -34,8 +34,8 @@ def _compress_image(path: Path) -> tuple[bytes, str]:
 class FacebookPublisher(BasePublisher):
     def __init__(self, credentials: dict = None):
         _c = credentials or {}
-        self.page_id      = _c.get("FACEBOOK_PAGE_ID")           or os.environ["FACEBOOK_PAGE_ID"]
-        self.access_token = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ["FACEBOOK_PAGE_ACCESS_TOKEN"]
+        self.page_id      = _c.get("FACEBOOK_PAGE_ID")           or os.environ.get("FACEBOOK_PAGE_ID", "")
+        self.access_token = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
 
     def get_account_info(self) -> "dict | None":
         resp = requests.get(
@@ -46,6 +46,15 @@ class FacebookPublisher(BasePublisher):
         if resp.ok:
             data = resp.json()
             return {"name": data.get("name", ""), "id": str(data.get("id", ""))}
+        try:
+            err = resp.json().get("error", {})
+            msg = err.get("message", "") or err.get("type", "")
+            if msg:
+                raise RuntimeError(f"Facebook API error: {msg}")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
         return None
 
     def verify_auth(self) -> bool:
