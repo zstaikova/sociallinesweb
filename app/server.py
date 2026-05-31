@@ -1318,12 +1318,12 @@ def api_setup_save_keys():
     return jsonify({"ok": True, "configured": configured})
 
 
-def _oauth_callback_url() -> str:
+def _oauth_callback_url(force_127: bool = False) -> str:
     """Returns the correct callback URL depending on environment."""
     host = request.host
-    if host.startswith("localhost"):
-        host = host.replace("localhost", "127.0.0.1")
-    if host.startswith("127."):
+    if host.startswith("localhost") or host.startswith("127."):
+        if force_127:
+            host = host.replace("localhost", "127.0.0.1")
         return f"http://{host}/callback"
     return "https://app.socialline.space/callback"
 
@@ -1812,6 +1812,7 @@ def api_setup_launch_oauth(platform_id):
 
     if platform_id == "x":
         load_dotenv(ENV_FILE, override=True)
+        redirect = _oauth_callback_url(force_127=True)
         import tweepy as _tweepy
         consumer_key    = os.getenv("X_CONSUMER_KEY") or ""
         consumer_secret = os.getenv("X_CONSUMER_SECRET") or ""

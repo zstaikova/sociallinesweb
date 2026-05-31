@@ -1,127 +1,115 @@
 # Threads Integration Setup
 
-Step-by-step guide to connect socialline to Threads via the Threads API.
+Connect Socialline to a Threads account for posting images and text.
 
 ---
 
 ## Prerequisites
 
-- A Threads account (personal account works — no Business account required)
-- Facebook integration already working (Meta apps share the same developer portal)
-- GitHub Pages site live at `https://famjammemes.github.io/famjammemes/` with the OAuth relay script in `index.html` (see `temp_index.html` in project root)
+- A Threads account (connected to an Instagram account)
+- Facebook integration working (see `facebook_setup.md`) — Threads uses Facebook's CDN for image staging
+- Socialline accessible via HTTPS (Threads OAuth requires a secure redirect URI)
+- A Meta developer app (can be the same one used for Facebook/Instagram)
 
 ---
 
-## Create the Meta App
+## HTTPS Requirement
 
-1. Go to https://developers.facebook.com → **My Apps** → **Create App**
-2. Select **Other** → **Next** → choose app type **None** → **Next**
-3. Fill in:
-   - **App Name**: your brand name (e.g. `socialline`)
-   - **App Contact Email**: your email
-4. Click **Create App**
+> **Critical:** Threads OAuth does **not** accept `http://` redirect URIs. The callback must be `https://`. Socialline uses `https://app.socialline.space/callback` when running behind Cloudflare Tunnel. If the domain is suspended or unavailable, Threads OAuth cannot be completed.
+
+If `socialline.space` is unavailable, the workaround is to use a GitHub Pages relay page (a static page that reads `?code=` from the URL and POSTs it to localhost). See `threads_setup_github_relay.md` for the old approach.
 
 ---
 
-## Add Threads Product
+## Meta App Configuration
 
-1. In your app dashboard → **Add a product** → find **Threads API** → **Set up**
+You can use the same Meta app as Facebook/Instagram, or create a separate one.
+
+1. In your Meta app dashboard → **Add a product** → find **Threads API** → **Set up**
 2. Under **Threads API → Settings**:
-   - **Threads Display Name**: your brand (e.g. `socialline`)
-   - **Valid OAuth Redirect URIs**: `https://famjammemes.github.io/famjammemes/`
-   - **Uninstall Callback URL**: `https://famjammemes.github.io/famjammemes/`
-   - **Delete Callback URL**: `https://famjammemes.github.io/famjammemes/`
-3. Save changes
+   - **Valid OAuth Redirect URIs**: `https://app.socialline.space/callback`
+   - **Uninstall Callback URL**: `https://app.socialline.space/callback`
+3. Under **Threads API → Permissions**, add:
+   - `threads_basic` — authentication and reading account info
+   - `threads_content_publish` — creating and publishing posts
 
----
-
-## Add Required Scopes
-
-In **Threads API → Permissions**:
-- Add `threads_basic`
-- Add `threads_content_publish`
-
-Both are needed — `threads_basic` for auth, `threads_content_publish` for posting.
-
----
-
-## Add Test User (Sandbox Mode)
-
-Before going live, Meta requires you to authorize test users.
-
-1. In the developer portal → your app → **App Roles** → **Roles** → **Add People** — OR —
-2. Go directly to https://www.threads.com/settings/website_permissions
-   - Find your app under **"Apps with Threads permissions"**
-   - Accept the pending invite there
-
-The test user must be added before running the auth script — otherwise you'll get:
-```
-"The user has not accepted the invite to test the app."
-```
-
----
-
-## Configure .env
-
+Add to `.env`:
 ```env
-THREADS_APP_ID=<your app id>
-THREADS_APP_SECRET=<your app secret>
-```
-
-Leave `THREADS_USER_ID` and `THREADS_ACCESS_TOKEN` blank — filled in by the auth script.
-
-App ID and Secret are found in the developer portal → your app → **App Settings → Basic**.
-
----
-
-## Run Authorization
-
-```bash
-cd D:\socialline
-python bin/auth/threads.py
-```
-
-**Flow:**
-1. Script opens your browser to the Threads consent screen
-2. You approve the permissions
-3. Threads redirects to your GitHub Pages site with `?code=` in the URL
-4. The page's JavaScript automatically relays the code to `localhost:8080`
-5. Script catches it, exchanges for a long-lived token, saves to `.env`
-
-**Verify:**
-```bash
-python bin/cli.py auth threads
+THREADS_APP_ID=<app id>
+THREADS_APP_SECRET=<app secret>
 ```
 
 ---
 
-## Test Posting
+## Sandbox / Test Mode
 
-```bash
-python bin/cli.py run --platforms threads --dry-run
-```
+While your app is in Development mode, only accounts explicitly added as test users can authorize the app.
 
-Remove `--dry-run` to actually post. In sandbox/test mode, only test users can see posts.
+1. In Meta developer portal → your app → **App Roles** → **Roles** → **Add People**
+2. Add the Threads account's associated Instagram/Facebook email
+3. The invited user must **accept** the invite:
+   - Go to `https://www.threads.com/settings/website_permissions`
+   - Find your app under "Apps with Threads permissions" and accept
+
+> **Gotcha — "The user has not accepted the invite":** The OAuth flow completes but returns this error even if the user is listed in Roles. The user must actively accept the invite at the Threads settings URL above — just being added to Roles is not enough.
 
 ---
 
-## Going Live (App Review)
+## Connect via Socialline Web UI
 
-Threads requires app review before posting to real public accounts.
+1. Go to `http://localhost:5000` → select your brand → **Accounts**
+2. Click **Connect** next to Threads
+3. A Threads authorization window opens (requires HTTPS redirect)
+4. Approve the permissions
+5. Socialline exchanges the code for a long-lived token and stores it in the brand's AccountStore
 
-1. In the developer portal → your app → **App Review** → request `threads_content_publish`
+---
+
+## How Posting Works
+
+Threads image posting requires a publicly accessible image URL (same constraint as Instagram):
+
+1. **Stage the image** — Upload to the connected Facebook Page's CDN as an unpublished photo
+2. **Create a Threads container** — `POST /me/threads` with `media_type=IMAGE`, `image_url`, and `text`
+3. **Publish the container** — `POST /me/threads_publish` with `creation_id`
+
+> **Gotcha — "no Facebook credentials for image staging":** The Threads publisher needs an active Facebook account connected to the same brand to stage images. Connect Facebook first, then connect Threads. If Facebook is disconnected or tokens expire, Threads image posts will fail.
+
+---
+
+## Credential Storage
+
+| Key | Value |
+|---|---|
+| `THREADS_USER_ID` | Numeric Threads user ID |
+| `THREADS_ACCESS_TOKEN` | Long-lived access token (~60 days) |
+
+Facebook credentials (`FACEBOOK_PAGE_ID`, `FACEBOOK_PAGE_ACCESS_TOKEN`) are read from the brand's active Facebook account in AccountStore at publish time.
+
+---
+
+## Token Renewal
+
+Threads long-lived tokens expire after ~60 days. When posting fails with an auth error, disconnect and reconnect the account via the Socialline web UI.
+
+---
+
+## Going Live (Production App Review)
+
+In sandbox/development mode, only test users can authorize the app and only they can see posts. To post publicly:
+
+1. In Meta developer portal → your app → **App Review** → request `threads_content_publish`
 2. Provide:
    - Description of how the app uses Threads
-   - Screencast demo of the OAuth flow and posting
+   - Screencast of the OAuth flow and content posting
    - Live website with Privacy Policy and Terms of Service
-3. Once approved, re-run `python bin/auth/threads.py` to get a production token
+3. Once approved, production tokens work for any Threads user
 
 ---
 
-## Re-authorization (token expired)
+## Gotchas and Known Issues
 
-Threads long-lived tokens last ~60 days. When `cli.py auth threads` fails, re-run:
-
-```bash
-python bin/auth/threads.py
-```
+- **"Insecure Login Blocked"** — The redirect URI is HTTP. Threads requires HTTPS. Ensure Cloudflare Tunnel is active and `socialline.space` is reachable.
+- **Domain suspension** — If `socialline.space` is flagged/suspended by a registrar or security vendor, the HTTPS redirect fails at the DNS level. The GitHub Pages relay workaround can bypass this during suspension.
+- **Wrong account logged in** — Threads OAuth uses whichever account is logged into Threads in the browser. Ensure you're logged into the correct account before clicking Connect.
+- **Password lockout** — Too many failed password attempts on the Threads app locks the account temporarily. Use the "Forgot password" flow on Instagram to reset.

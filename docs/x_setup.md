@@ -1,92 +1,109 @@
 # X (Twitter) Integration Setup
 
-Step-by-step guide to connect socialline to an X account.
+Connect Socialline to an X account for posting tweets with images.
 
 ---
 
 ## Prerequisites
 
-- An X (Twitter) account
-- A phone number verified on the account (required for developer access)
+- An X (Twitter) account with a verified phone number (required for developer access)
+- An X developer app with Read and Write permissions
+- Socialline running at `http://localhost:5000`
 
 ---
 
 ## Create an X Developer App
 
-1. Go to https://developer.x.com → **Sign in** → **Developer Portal**
-2. Apply for a developer account if you don't have one (answer the use-case questions — "automating content posting for my brand page")
-3. Once approved, go to **Projects & Apps** → **New Project**
-4. Create a project, then create an **App** inside it
-5. App name: e.g. `socialline`
+1. Go to https://developer.x.com → **Developer Portal** → apply for a developer account if needed
+2. Create a **Project** and an **App** inside it
+3. App name: e.g. `socialline`
 
 ---
 
-## Configure App Permissions
+## Configure App Permissions (do this FIRST)
 
-1. In your app → **Settings** tab
-2. Under **User authentication settings** → **Set up**
-3. Set:
-   - **App permissions**: Read and write
+**Critical:** App permissions must be set **before** generating access tokens. Tokens inherit the permission level at the time they are generated — tokens created under Read-only permission remain read-only even if you upgrade the app later.
+
+1. In your app → **Settings** → **User authentication settings** → **Set up**
+2. Set:
+   - **App permissions**: Read and Write
    - **Type of App**: Web App, Automated App or Bot
-   - **Callback URI**: `http://localhost` (required field, not actually used)
-   - **Website URL**: your site URL
-4. Save
+   - **Callback URI / Redirect URL**: `http://127.0.0.1:5000/callback`
+   - **Website URL**: your site URL (e.g. `https://socialline.space`)
+3. Save
+
+> **Gotcha — callback must be `127.0.0.1`, not `localhost`:** X validates the callback URL strictly. `http://localhost:5000/callback` is rejected with a 403 "Callback URL not approved" error even if you add it to the portal. Add `http://127.0.0.1:5000/callback` specifically. If the server runs on a different port, update accordingly.
 
 ---
 
-## Get Access Keys
+## Get App Credentials
 
 1. Go to your app → **Keys and Tokens** tab
-2. Generate / copy:
-   - **API Key** (Consumer Key)
-   - **API Key Secret** (Consumer Secret)
-3. Under **Authentication Tokens** → **Access Token and Secret** → **Generate**
-   - Make sure it says **Read and Write** (not Read Only)
-4. Copy:
-   - **Access Token**
-   - **Access Token Secret**
+2. Under **Consumer Keys** → **API Key and Secret** → copy:
+   - **API Key** → `X_CONSUMER_KEY`
+   - **API Key Secret** → `X_CONSUMER_SECRET`
 
----
-
-## Configure .env
-
+Add to `.env`:
 ```env
 X_CONSUMER_KEY=<API Key>
 X_CONSUMER_SECRET=<API Key Secret>
-X_ACCESS_TOKEN=<Access Token>
-X_ACCESS_TOKEN_SECRET=<Access Token Secret>
 ```
+
+> **These stay in `.env`** — Consumer Key and Secret are app-level credentials, shared across all brands using the same X developer app. Per-account Access Tokens are stored in the AccountStore, not `.env`.
+
+> **Do not revoke or regenerate Consumer Keys without updating `.env`** — and keep `.env` read-only (`attrib +R .env`) to prevent the app from accidentally overwriting it.
 
 ---
 
-## Verify
+## Connect via Socialline Web UI
 
-```bash
-python cli.py auth x
-```
+1. Go to `http://localhost:5000` → select your brand → **Accounts**
+2. Click **Connect** next to X
+3. A browser window opens to X's authorization page — **make sure you are logged into the correct X account in that browser before clicking Connect**
+4. Authorize the app; X redirects to `http://127.0.0.1:5000/callback`
+5. Socialline exchanges the OAuth verifier for an Access Token and Access Token Secret, stores them in the brand's AccountStore
 
-Expected output:
-```
-X auth OK — account: @<username> (<user_id>)
-```
-
----
-
-## Test Posting
-
-```bash
-python cli.py run --platforms x --dry-run
-```
-
-Remove `--dry-run` to post.
-
-Posts are tweets with the image attached. Caption is truncated to 280 characters with up to 3 hashtags.
+**What happens under the hood:**
+- X OAuth 1.0a three-legged flow via `tweepy.OAuth1UserHandler`
+- Request token obtained, user redirected to `https://api.twitter.com/oauth/authorize`
+- After user approves, callback delivers `oauth_token` + `oauth_verifier`
+- Verifier exchanged for Access Token + Secret, saved to AccountStore
 
 ---
 
-## Notes
+## Credential Storage
 
-- X uses **tweepy** internally: v2 API for posting, v1.1 API for media uploads
-- Access tokens don't expire unless you revoke them or regenerate them
-- Free tier allows up to 1,500 tweets/month (Basic plan: 3,000/month)
-- If you get a 403 error, check that the Access Token was generated **after** setting Read and Write permissions (tokens generated before the permission change are read-only)
+| Location | Keys |
+|---|---|
+| `.env` (read-only) | `X_CONSUMER_KEY`, `X_CONSUMER_SECRET` |
+| AccountStore (encrypted) | `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` |
+
+Disconnecting an X account in the web UI clears only the AccountStore tokens, never the Consumer Key/Secret.
+
+---
+
+## How Posting Works
+
+- Media uploads use the **v1.1 API** (`media/upload`)
+- Tweet creation uses the **v2 API** (`POST /2/tweets`)
+- Caption is truncated to 280 characters with up to 3 hashtags appended
+
+---
+
+## Rate Limits
+
+| Plan | Monthly tweet limit |
+|---|---|
+| Free | 1,500 |
+| Basic ($100/mo) | 3,000 |
+| Pro ($5,000/mo) | 300,000 |
+
+---
+
+## Gotchas and Known Issues
+
+- **"X app not configured on this server"** — `X_CONSUMER_KEY` is empty in `.env`. The server reads this at startup via `load_dotenv`. If `.env` was recently edited or regenerated, restart the server.
+- **"Callback URL not approved" (403)** — The callback registered in the X portal doesn't match what Socialline sends. Verify `http://127.0.0.1:PORT/callback` is listed in the app's authentication settings exactly.
+- **Posting to wrong account** — X OAuth authorizes whichever account is currently logged in the browser. Log into the correct account at twitter.com before clicking Connect in Socialline.
+- **Read-only token** — If posts fail with a 403 "Write permission" error, the Access Token was generated before app permissions were set to Read and Write. Delete the token in the X portal, set permissions to Read and Write, regenerate, and reconnect.
+- **Token doesn't expire** — X Access Tokens are permanent unless revoked. You won't be prompted to reconnect unless you revoke them in the X portal or disconnect in Socialline.

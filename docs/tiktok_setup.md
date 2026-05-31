@@ -1,136 +1,133 @@
 # TikTok Integration Setup
 
-Step-by-step guide to connect socialline to TikTok via the Content Posting API.
+Connect Socialline to TikTok for video publishing via the Content Posting API.
 
 ---
 
 ## Prerequisites
 
-### 1. TikTok Developer Account
-- Go to https://developers.tiktok.com and sign in with your TikTok account
-- Complete developer registration if prompted
-
-### 2. Public Website with Legal Pages
-TikTok requires a live website with Privacy Policy and Terms of Service before you can create an app.
-
-Easiest option: GitHub Pages
-
-1. Create a GitHub account and a public repo (e.g. `famjammemes/famjammemes`)
-2. Enable GitHub Pages on the repo (Settings → Pages → Deploy from main branch)
-3. Add the following files to the repo:
-   - `index.html` — app landing page describing what the service does
-   - `privacy-policy.html` — privacy policy (can use termsfeed.com to generate)
-   - `terms.html` — terms of service
-
-Your site will be live at `https://<username>.github.io/<repo>/`
+- A TikTok account
+- A public website with Privacy Policy and Terms of Service (required by TikTok for app creation)
+- Socialline running at `http://localhost:5000`
+- Node.js installed (for the Remotion video rendering pipeline)
 
 ---
 
-## Create the TikTok App (Production)
+## TikTok App Requirements
+
+TikTok requires a live website before creating a developer app. The easiest option is a GitHub Pages site:
+
+1. Create a public GitHub repo
+2. Enable GitHub Pages (Settings → Pages → Deploy from main branch)
+3. Add `index.html`, `privacy-policy.html`, and `terms.html`
+
+Your site will be at `https://<username>.github.io/<repo>/`
+
+---
+
+## Create the TikTok App
 
 1. Go to https://developers.tiktok.com → **Manage Apps** → **Create app**
-2. Fill in:
-   - **App name**: your brand name
-   - **Category**: Entertainment (or appropriate)
-   - **Description**: what your app does
-   - **Terms of Service URL**: your GitHub Pages terms URL
-   - **Privacy Policy URL**: your GitHub Pages privacy policy URL
-   - **Platform**: Web → enter your GitHub Pages site URL
+2. Fill in app name, category, description, and your Privacy Policy / Terms URLs
 3. Under **Products** → **Add products**:
-   - Add **Login Kit** → Settings → add Redirect URI: `https://<your-site>/`
-   - Add **Content Posting API** → enable **Direct Post**
-4. Save the **Client Key** and **Client Secret** from App credentials
+   - **Login Kit** → Settings → add Redirect URI: `http://localhost:5000/callback`
+   - **Content Posting API** → enable **Direct Post**
+4. Copy the **Client Key** and **Client Secret** from App credentials
+
+Add to `.env`:
+```env
+TIKTOK_CLIENT_KEY=<client key>
+TIKTOK_CLIENT_SECRET=<client secret>
+```
+
+> **Gotcha — Client Key vs Client ID:** TikTok calls their OAuth identifier "Client Key" (not "Client ID" like most OAuth providers). It maps to the standard `client_id` OAuth parameter internally.
 
 ---
 
-## Create a Sandbox
+## Create a Sandbox (Required for Testing)
 
-TikTok requires sandbox testing before certification. The sandbox has separate credentials.
+TikTok requires sandbox testing before certification. The sandbox has **separate credentials** from production.
 
 1. In your app page → **Sandbox** → **Create a Sandbox**
-2. Name it (e.g. `famjammemes-sandbox`)
-3. Select **Clone from Production** → **Confirm**
+2. Choose **Clone from Production**
+3. In the sandbox → **Credentials** — copy the sandbox **Client Key** and **Client Secret** (different from production)
+4. Add the sandbox Login Kit redirect URI: `http://localhost:5000/callback`
+5. **Sandbox → Target Users** → **Add account** → add your TikTok username
 
-### Configure the Sandbox
-
-1. **Credentials** — reveal and copy the sandbox **Client Key** and **Client Secret** (different from production)
-2. **Add products**:
-   - **Login Kit** → Settings → add Redirect URI: `https://<your-site>/`
-   - **Content Posting API** → enable **Direct Post**
-3. **Scopes** — the following are automatically included by the products above:
-   - `user.info.basic` (via Login Kit)
-   - `video.publish` (via Content Posting API)
-   - `video.upload` (via Content Posting API)
-4. **Sandbox settings → Target Users** → **Add account** → add your TikTok username (required — only authorized accounts can test the sandbox)
+> **Gotcha — sandbox credentials are separate:** Using production Client Key/Secret during testing will fail or post to your real account. Use sandbox credentials during development; switch to production only after TikTok certification.
 
 ---
 
-## Configure .env
+## Connect via Socialline Web UI
 
-```env
-TIKTOK_CLIENT_KEY=<sandbox client key>
-TIKTOK_CLIENT_SECRET=<sandbox client secret>
-```
+1. Go to `http://localhost:5000` → select your brand → **Accounts**
+2. Click **Connect** next to TikTok
+3. A TikTok authorization window opens
+4. Click **Continue** to approve
+5. Socialline exchanges the code for tokens and stores them in the brand's AccountStore
 
-Leave `TIKTOK_ACCESS_TOKEN` and `TIKTOK_OPEN_ID` blank — they get filled in by the auth script.
-
----
-
-## Run Authorization
-
-```bash
-cd D:\socialline
-python auth_tiktok.py
-```
-
-**Flow:**
-1. Script opens your browser to the TikTok consent screen
-2. Click **Continue** to approve
-3. TikTok redirects to your GitHub Pages site with `?code=` in the URL
-4. The page's JavaScript automatically relays the code to `localhost:8080`
-5. Script catches it, exchanges for tokens, saves to `.env`
-
-**Verify:**
-```bash
-python cli.py auth tiktok
-```
-
-Expected output:
-```
-TikTok auth OK — account: <display name> (<open_id>)
-```
+**What happens under the hood:**
+- OAuth 2.0 PKCE flow to `https://www.tiktok.com/v2/auth/authorize/`
+- Code exchanged at `https://open.tiktokapis.com/v2/oauth/token/`
+- Access Token and Open ID stored in AccountStore
 
 ---
 
-## Test Posting
+## How Posting Works
 
-```bash
-python cli.py run --platforms tiktok --dry-run
-```
+TikTok requires video files (not images). Socialline's TikTok pipeline:
 
-Remove `--dry-run` to actually post. In sandbox mode, posts are visible only to the sandbox account and are set to `SELF_ONLY` privacy.
+1. **Render video** — The Remotion pipeline (`D:\remotion`) takes a queue image and renders it into a short video (slide-style or animated) using `@remotion/renderer`
+2. **Initialize upload** — `POST /v2/post/publish/video/init/` with video size, title, and privacy settings
+3. **Upload chunks** — Video is uploaded in chunks to TikTok's upload URL
+4. **Poll status** — `GET /v2/post/publish/status/fetch/` is polled until status is `SEND_SUCCESS` or an error is returned
 
 ---
 
-## Production Certification (after testing)
+## Credential Storage
 
-1. Switch `.env` credentials back to production Client Key / Secret
-2. Re-run `python auth_tiktok.py` with production credentials
+| Location | Keys |
+|---|---|
+| `.env` | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` |
+| AccountStore (encrypted) | `TIKTOK_ACCESS_TOKEN`, `TIKTOK_OPEN_ID`, `TIKTOK_REFRESH_TOKEN` |
+
+---
+
+## Privacy Settings
+
+In sandbox mode, all posts are set to `SELF_ONLY` (visible only to the account owner). After production certification, change in `pipeline/platforms/tiktok/publisher.py`:
+
+```python
+"privacy_level": "PUBLIC_TO_EVERYONE"
+```
+
+---
+
+## Production Certification
+
+After sandbox testing passes:
+
+1. Switch `.env` to production Client Key / Secret
+2. Reconnect TikTok in the web UI with production credentials
 3. In TikTok portal → your production app → submit for review
 4. Required for review:
    - Live website with Privacy Policy and Terms
-   - Demo video showing OAuth flow and content posting
-   - Description of how the app uses each scope
-5. Once approved, change `privacy_level` in `pipeline/publishers/tiktok.py` from `SELF_ONLY` to `PUBLIC_TO_EVERYONE`
+   - Demo video of the OAuth flow and content posting
+   - Description of scope usage
+
+TikTok review typically takes 5–10 business days.
 
 ---
 
-## Re-authorization (token expired)
+## Token Refresh
 
-TikTok access tokens expire. When `cli.py auth tiktok` fails, re-run:
+TikTok access tokens expire. The publisher attempts to refresh using the Refresh Token before each post. If refresh fails, disconnect and reconnect the account in the web UI.
 
-```bash
-python auth_tiktok.py
-```
+---
 
-This overwrites the old token in `.env` with a fresh one.
+## Gotchas and Known Issues
+
+- **Sandbox target user required** — Only accounts added as Target Users in the sandbox settings can authorize the sandbox app. Attempting to auth with an unregistered account returns an error.
+- **Video format requirements** — TikTok requires MP4 or WebM, minimum 3 seconds, specific bitrate and resolution constraints. The Remotion pipeline handles this, but raw image uploads are not supported.
+- **Upload timeout** — Large video files can take several minutes to upload and process. The publisher polls status for up to 5 minutes before failing.
+- **Certification rejection** — TikTok commonly rejects apps that don't have a clear use case or adequate privacy policy. Make the privacy policy specific to your app's data handling.

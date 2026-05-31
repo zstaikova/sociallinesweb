@@ -1,64 +1,67 @@
-# socialline — Setup Guides
+# Socialline — Setup Guides
 
-Platform setup docs for the socialline content pipeline.
+Platform setup docs for the Socialline content pipeline.
+
+All platform connections are made through the **web UI** at `http://localhost:5000` → select a brand → **Accounts**. Credentials are stored encrypted in the brand's AccountStore, not in `.env`.
+
+`.env` holds only app-level keys that are shared across brands (API keys, app secrets). It should be kept **read-only** (`attrib +R .env`) to prevent accidental overwrites.
+
+---
 
 ## Platforms
 
-| Guide | Purpose |
-|-------|---------|
-| [facebook_setup.md](facebook_setup.md) | Post to a Facebook Page |
-| [instagram_setup.md](instagram_setup.md) | Post to an Instagram Business account |
-| [x_setup.md](x_setup.md) | Post to X (Twitter) |
-| [tiktok_setup.md](tiktok_setup.md) | Post to TikTok (requires sandbox + certification) |
-| [reddit_setup.md](reddit_setup.md) | Reddit as content source |
+| Guide | Auth Method | Notes |
+|---|---|---|
+| [facebook_setup.md](facebook_setup.md) | OAuth 2.0 (Meta) | Required for Instagram and Threads image staging |
+| [instagram_setup.md](instagram_setup.md) | OAuth 2.0 (Meta) | Requires Facebook Page linked to Instagram account |
+| [threads_setup.md](threads_setup.md) | OAuth 2.0 (Meta) | Requires HTTPS redirect; depends on Facebook credentials |
+| [x_setup.md](x_setup.md) | OAuth 1.0a | Consumer Key in `.env`; Access Token in AccountStore |
+| [bluesky_setup.md](bluesky_setup.md) | App password | No OAuth — handle + app password only |
+| [linkedin_setup.md](linkedin_setup.md) | OAuth 2.0 | Requires Company Page; Community Management API |
+| [tiktok_setup.md](tiktok_setup.md) | OAuth 2.0 | Video only; sandbox required before certification |
+| [reddit_setup.md](reddit_setup.md) | Script app (read-only) | Content source, not a publisher |
 
-## Quick Start
+---
 
-1. Complete setup for each platform you want to use
-2. Fill in `.env` with credentials
-3. Verify all connections:
-   ```bash
-   python cli.py auth facebook
-   python cli.py auth instagram
-   python cli.py auth x
-   python cli.py auth tiktok
-   python cli.py auth reddit
-   ```
-4. Run a dry-run to test:
-   ```bash
-   python cli.py run --platforms facebook instagram x tiktok --dry-run
-   ```
-5. Run for real:
-   ```bash
-   python cli.py run --platforms facebook instagram x tiktok
-   ```
+## `.env` Reference
 
-## .env Reference
+Only app-level credentials belong in `.env`. Per-account tokens are in AccountStore.
 
 ```env
-# Reddit (source)
-REDDIT_CLIENT_ID=
-REDDIT_CLIENT_SECRET=
-REDDIT_USER_AGENT=socialline/1.0
+# Meta (Facebook / Instagram / Threads)
+FACEBOOK_APP_ID=
+FACEBOOK_APP_SECRET=
 
-# Facebook
-FACEBOOK_PAGE_ID=
-FACEBOOK_PAGE_ACCESS_TOKEN=
+# Threads (can use the same app or a separate one)
+THREADS_APP_ID=
+THREADS_APP_SECRET=
 
-# Instagram
-INSTAGRAM_ACCOUNT_ID=
-INSTAGRAM_ACCESS_TOKEN=
-
-# X (Twitter)
+# X (Twitter) — app-level only; access tokens go in AccountStore
 X_CONSUMER_KEY=
 X_CONSUMER_SECRET=
-X_ACCESS_TOKEN=
-X_ACCESS_TOKEN_SECRET=
 
 # TikTok
 TIKTOK_CLIENT_KEY=
 TIKTOK_CLIENT_SECRET=
-TIKTOK_ACCESS_TOKEN=
-TIKTOK_OPEN_ID=
-TIKTOK_REFRESH_TOKEN=
+
+# LinkedIn
+LINKEDIN_CLIENT_ID=
+LINKEDIN_CLIENT_SECRET=
+
+# Reddit (content source)
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT=socialline/1.0
+
+# Server encryption
+ACCOUNT_MASTER_KEY=  # stored in Windows Credential Manager, not .env
 ```
+
+---
+
+## General Gotchas
+
+- **Meta OAuth redirect** — Use `http://localhost:PORT/callback` (not `127.0.0.1`) for all Meta platforms (Facebook, Instagram, Threads).
+- **X OAuth redirect** — Use `http://127.0.0.1:PORT/callback` (not `localhost`) for X — X rejects `localhost`.
+- **Threads requires HTTPS** — The Threads OAuth redirect must be an `https://` URL. Meta enforces this even in development mode for Threads specifically.
+- **AccountStore encryption** — The master key is derived from `ACCOUNT_MASTER_KEY` stored in Windows Credential Manager (not in `.env`). If the Credential Manager entry is missing, AccountStore cannot decrypt credentials.
