@@ -162,6 +162,23 @@
             <!-- Title (= caption) -->
             <div class="mb-3">
               <label class="form-label small fw-semibold mb-1">Title</label>
+              {% if seo_strategy %}
+              {% set seo_cta_tk  = seo_strategy.get("cta", {}).get("tiktok", "") %}
+              {% set seo_kw_tk   = seo_strategy.get("keywords", {}).get("tiktok", []) %}
+              {% set seo_tags_tk = seo_strategy.get("hashtags", {}).get("tiktok", []) %}
+              {% if seo_cta_tk or seo_kw_tk or seo_tags_tk %}
+              <div class="seo-hint-panel mb-2 p-2 rounded" style="background:#f0f7ff;border:1px solid #bfdbfe;font-size:.75rem;">
+                <div class="fw-semibold text-primary mb-1" style="font-size:.7rem;letter-spacing:.04em;">SEO STRATEGY</div>
+                {% if seo_kw_tk %}<div class="mb-1"><span class="text-muted">Keywords:</span> {{ seo_kw_tk | join(" · ") }}</div>{% endif %}
+                {% if seo_tags_tk %}<div class="mb-1"><span class="text-muted">Hashtags:</span> <span style="color:#6366f1;">{{ seo_tags_tk | join(" ") }}</span>
+                  <button type="button" class="btn btn-link btn-sm py-0 px-1" style="font-size:.7rem;"
+                          onclick="appendHashtags('caption-tiktok', {{ seo_tags_tk | tojson }})">+ insert</button></div>{% endif %}
+                {% if seo_cta_tk %}<div><span class="text-muted">CTA:</span> {{ seo_cta_tk }}
+                  <button type="button" class="btn btn-link btn-sm py-0 px-1" style="font-size:.7rem;"
+                          onclick="appendCta('caption-tiktok', {{ seo_cta_tk | tojson }})">+ insert</button></div>{% endif %}
+              </div>
+              {% endif %}
+              {% endif %}
               <textarea class="form-control platform-caption" id="caption-tiktok"
                         data-platform="tiktok" data-limit="2200"
                         rows="3" placeholder="Video title…"></textarea>
@@ -229,6 +246,32 @@
           </div>
           {% else %}
           <div class="card-body pb-2 d-none" id="body-{{ pid }}">
+            {# SEO hints for this platform #}
+            {% if seo_strategy %}
+            {% set seo_cta      = seo_strategy.get("cta", {}).get(pid, "") %}
+            {% set seo_keywords = seo_strategy.get("keywords", {}).get(pid, []) %}
+            {% set seo_tags     = seo_strategy.get("hashtags", {}).get(pid, []) %}
+            {% if seo_cta or seo_keywords or seo_tags %}
+            <div class="seo-hint-panel mb-2 p-2 rounded" style="background:#f0f7ff;border:1px solid #bfdbfe;font-size:.75rem;">
+              <div class="fw-semibold text-primary mb-1" style="font-size:.7rem;letter-spacing:.04em;">SEO STRATEGY</div>
+              {% if seo_keywords %}
+              <div class="mb-1"><span class="text-muted">Keywords:</span> {{ seo_keywords | join(" · ") }}</div>
+              {% endif %}
+              {% if seo_tags %}
+              <div class="mb-1"><span class="text-muted">Hashtags:</span> <span style="color:#6366f1;">{{ seo_tags | join(" ") }}</span>
+                <button type="button" class="btn btn-link btn-sm py-0 px-1" style="font-size:.7rem;"
+                        onclick="appendHashtags('caption-{{ pid }}', {{ seo_tags | tojson }})">+ insert</button>
+              </div>
+              {% endif %}
+              {% if seo_cta %}
+              <div><span class="text-muted">CTA:</span> {{ seo_cta }}
+                <button type="button" class="btn btn-link btn-sm py-0 px-1" style="font-size:.7rem;"
+                        onclick="appendCta('caption-{{ pid }}', {{ seo_cta | tojson }})">+ insert</button>
+              </div>
+              {% endif %}
+            </div>
+            {% endif %}
+            {% endif %}
             <textarea class="form-control platform-caption" id="caption-{{ pid }}"
                       data-platform="{{ pid }}" data-limit="{{ limit }}"
                       rows="4" placeholder="Caption for {{ pname }}..."></textarea>
@@ -350,6 +393,23 @@ function toggleAll() {
   connectedList.forEach(p => setSelected(p, !allOn));
 }
 
+// ── SEO hint helpers ────────────────────────────────────────────
+function appendHashtags(id, tags) {
+  const ta = document.getElementById(id);
+  if (!ta) return;
+  const existing = ta.value.trimEnd();
+  const block = '\n\n' + tags.join(' ');
+  ta.value = existing + block;
+  ta.dispatchEvent(new Event('input'));
+}
+function appendCta(id, cta) {
+  const ta = document.getElementById(id);
+  if (!ta) return;
+  const existing = ta.value.trimEnd();
+  ta.value = existing + (existing ? '\n\n' : '') + cta;
+  ta.dispatchEvent(new Event('input'));
+}
+
 // ── Character counters ──────────────────────────────────────────
 document.querySelectorAll('.platform-caption').forEach(ta => {
   const limit = parseInt(ta.dataset.limit);
@@ -398,9 +458,13 @@ document.getElementById('btn-generate').addEventListener('click', async () => {
 
 // ── Post now ────────────────────────────────────────────────────
 document.getElementById('btn-post').addEventListener('click', async () => {
-  const platforms = PLATFORMS.filter(p => selected[p]);
-  const captions  = {};
-  platforms.forEach(p => captions[p] = (document.getElementById('caption-' + p)?.value || '').trim());
+  const platforms   = PLATFORMS.filter(p => selected[p]);
+  const coreCaption = document.getElementById('core-caption')?.value.trim() || '';
+  const captions    = {};
+  platforms.forEach(p => {
+    const platVal = (document.getElementById('caption-' + p)?.value || '').trim();
+    captions[p] = platVal || coreCaption;
+  });
 
   if (!platforms.length) { alert('Select at least one platform.'); return; }
 
@@ -648,9 +712,13 @@ function openScheduleModal() {
 }
 
 async function submitSchedule() {
-  const platforms = PLATFORMS.filter(p => selected[p]);
-  const captions  = {};
-  platforms.forEach(p => captions[p] = (document.getElementById('caption-' + p)?.value || '').trim());
+  const platforms   = PLATFORMS.filter(p => selected[p]);
+  const coreCaption = document.getElementById('core-caption')?.value.trim() || '';
+  const captions    = {};
+  platforms.forEach(p => {
+    const platVal = (document.getElementById('caption-' + p)?.value || '').trim();
+    captions[p] = platVal || coreCaption;
+  });
   const scheduledAt = document.getElementById('sched-datetime').value;
   const errEl = document.getElementById('sched-err');
 

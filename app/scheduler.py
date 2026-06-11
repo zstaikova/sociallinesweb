@@ -38,15 +38,21 @@ class ScheduleStore:
                     scheduled_at  TEXT NOT NULL,
                     status        TEXT NOT NULL DEFAULT 'pending',
                     result        TEXT,
-                    created_at    TEXT NOT NULL
+                    created_at    TEXT NOT NULL,
+                    format_map    TEXT
                 )
             """)
+            # Migrate existing tables that lack format_map
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(scheduled_posts)").fetchall()]
+            if "format_map" not in cols:
+                conn.execute("ALTER TABLE scheduled_posts ADD COLUMN format_map TEXT")
 
     def _parse(self, row) -> dict:
         d = dict(row)
         d["captions"]      = json.loads(d["captions"])
         d["platforms"]     = json.loads(d["platforms"])
         d["platform_opts"] = json.loads(d["platform_opts"])
+        d["format_map"]    = json.loads(d["format_map"]) if d.get("format_map") else {}
         if d["result"]:
             d["result"] = json.loads(d["result"])
         return d
@@ -54,26 +60,34 @@ class ScheduleStore:
     # ── public API ───────────────────────────────────────────────────
 
     def add(self, filename: str, captions: dict, platforms: list,
-            platform_options: dict, scheduled_at: str) -> str:
+            platform_options: dict, scheduled_at: str,
+            format_map: dict = None) -> str:
         """
         scheduled_at: local-time ISO string, e.g. '2026-05-01T14:30'
+        format_map: optional dict mapping format name → filename,
+                    e.g. {"vertical": "abc_vertical.mp4", "square": "abc_square.mp4"}
         Returns the new post id.
         """
         post_id = str(uuid.uuid4())[:8]
         now = datetime.now().isoformat(timespec="seconds")
-        # Normalise to seconds precision
         scheduled_at = datetime.fromisoformat(scheduled_at).isoformat(timespec="seconds")
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO scheduled_posts VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO scheduled_posts VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (post_id, filename, json.dumps(captions), json.dumps(platforms),
-                 json.dumps(platform_options), scheduled_at, "pending", None, now)
+                 json.dumps(platform_options), scheduled_at, "pending", None, now,
+                 json.dumps(format_map) if format_map else None)
             )
         return post_id
 
     def list_all(self, status: str = None) -> list:
         with self._conn() as conn:
-            if status:
+            if status == "failed":
+                # "failed" filter includes partial posts, excludes dismissed
+                rows = conn.execute(
+                    "SELECT * FROM scheduled_posts WHERE status IN ('failed','partial') ORDER BY scheduled_at",
+                ).fetchall()
+            elif status:
                 rows = conn.execute(
                     "SELECT * FROM scheduled_posts WHERE status=? ORDER BY scheduled_at",
                     (status,)
@@ -102,6 +116,13 @@ class ScheduleStore:
                 (status, json.dumps(result) if result is not None else None, post_id)
             )
 
+    def get_by_id(self, post_id: str) -> "dict | None":
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_posts WHERE id=?", (post_id,)
+            ).fetchone()
+        return self._parse(row) if row else None
+
     def delete(self, post_id: str):
         with self._conn() as conn:
             conn.execute("DELETE FROM scheduled_posts WHERE id=?", (post_id,))
@@ -111,12 +132,17 @@ class ScheduleStore:
             rows = conn.execute(
                 "SELECT status, COUNT(*) as cnt FROM scheduled_posts GROUP BY status"
             ).fetchall()
-        return {r["status"]: r["cnt"] for r in rows}
+        raw = {r["status"]: r["cnt"] for r in rows}
+        # Merge partial into failed count for display, exclude dismissed
+        raw["failed"] = raw.get("failed", 0) + raw.get("partial", 0)
+        raw.pop("dismissed", None)
+        return raw
 
 
 # ── Background runner ────────────────────────────────────────────────────────
 
-def _run_due_posts(store: ScheduleStore, queue_dir: Path, accounts_file: Path = None):
+def _run_due_posts(store: ScheduleStore, queue_dir: Path, accounts_file: Path = None,
+                   brand_id: str = None):
     """Called every 30 s by the background thread to fire due posts."""
     import sys
     root = Path(__file__).resolve().parents[1]
@@ -127,21 +153,31 @@ def _run_due_posts(store: ScheduleStore, queue_dir: Path, accounts_file: Path = 
         return
 
     for post in due:
-        _publish_scheduled(store, post, queue_dir, root, accounts_file=accounts_file)
+        _publish_scheduled(store, post, queue_dir, root, accounts_file=accounts_file,
+                           brand_id=brand_id)
 
 
 def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: Path,
-                       accounts_file: Path = None):
+                       accounts_file: Path = None, brand_id: str = None):
     """Publish one scheduled post and update its status."""
     from pipeline.core.content_item import ContentItem
     from pipeline.core.content_store import ContentStore
     from pipeline.core.accounts import AccountStore
     from pipeline.brands.famjam.config import create_pipeline
 
-    filename  = post["filename"]
-    captions  = post["captions"]
-    platforms = post["platforms"]
+    filename         = post["filename"]
+    captions         = post["captions"]
+    platforms        = post["platforms"]
     platform_options = post["platform_opts"]
+    format_map       = post.get("format_map") or {}
+
+    # Platform → format routing
+    _PLATFORM_FORMAT = {
+        "tiktok": "vertical", "instagram_reel": "vertical", "youtube_short": "vertical",
+        "facebook": "square", "instagram_post": "square",
+        "linkedin": "horizontal",
+        "twitter": "wide", "x": "wide",
+    }
 
     image_path = queue_dir / filename
     if not image_path.exists():
@@ -150,15 +186,24 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
 
     try:
         content_store = ContentStore(queue_dir.parent / "content.db")
-        acct_store    = AccountStore(accounts_file) if accounts_file else AccountStore()
-        pipeline      = create_pipeline(platforms=platforms, store=content_store,
-                                        account_store=acct_store)
+        acct_store    = AccountStore(accounts_file, brand_id=brand_id) if accounts_file else AccountStore()
+
+        # Pre-flight: record which platforms have no credentials so the result is explicit
+        no_creds = [p for p in platforms if not acct_store.get_credentials(p)]
+        pipeline = create_pipeline(platforms=platforms, store=content_store,
+                                   account_store=acct_store)
+
+        if not pipeline.platforms:
+            missing = ", ".join(no_creds) if no_creds else "all"
+            store.update_status(post["id"], "failed",
+                                {"error": f"No credentials loaded for: {missing}"})
+            return
 
         item = ContentItem(
             source_url=f"file://{image_path.resolve()}",
             source_platform="local",
             media_path=image_path,
-            caption=captions.get("facebook", image_path.stem),
+            caption=next((v for v in captions.values() if v), image_path.stem),
             tags=[],
         )
 
@@ -168,12 +213,23 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
         for transformer in pipeline.shared_transformers:
             item = transformer.transform(item)
 
-        results = {}
+        # Seed results: platforms with no credentials get an immediate skip entry
+        results = {p: {"status": "skipped", "detail": "No credentials"} for p in no_creds}
+
         for platform_config in pipeline.platforms:
             pname = platform_config.name
             try:
+                # Use format-specific file if available
+                fmt = _PLATFORM_FORMAT.get(pname)
+                fmt_filename = format_map.get(fmt) if fmt else None
+                fmt_path = queue_dir / fmt_filename if fmt_filename else image_path
+                if not fmt_path.exists():
+                    fmt_path = image_path  # fallback to primary
+
                 platform_item = copy.deepcopy(item)
-                platform_item.caption = captions.get(pname, item.caption)
+                platform_item.source_url = f"file://{fmt_path.resolve()}"
+                platform_item.media_path = fmt_path
+                platform_item.caption = captions.get(pname) or item.caption
                 if pname in platform_options:
                     platform_item.metadata.update(platform_options[pname])
 
@@ -196,8 +252,28 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
             except Exception as e:
                 results[pname] = {"status": "error", "detail": str(e)}
 
-        all_ok = all(r.get("status") == "posted" for r in results.values())
-        store.update_status(post["id"], "published" if all_ok else "failed", results)
+        posted  = sum(1 for r in results.values() if r.get("status") == "posted")
+        failed  = sum(1 for r in results.values() if r.get("status") in ("failed", "error"))
+        if posted == 0:
+            final_status = "failed"
+        elif failed == 0:
+            final_status = "published"
+        else:
+            final_status = "partial"
+        store.update_status(post["id"], final_status, results)
+
+        # Move files to posted folder on full success
+        if final_status == "published":
+            posted_dir = queue_dir.parent / "posted"
+            posted_dir.mkdir(exist_ok=True)
+            files_to_move = {filename} | set(format_map.values())
+            for fname in files_to_move:
+                src = queue_dir / fname
+                if src.exists():
+                    try:
+                        src.rename(posted_dir / fname)
+                    except Exception:
+                        pass
 
     except Exception as e:
         store.update_status(post["id"], "failed", {"error": str(e)})
@@ -207,15 +283,16 @@ def start_scheduler(get_stores_fn, interval: int = 30):
     """
     Start the background scheduler thread. Safe to call multiple times.
 
-    get_stores_fn: callable returning list of (sched_store, queue_dir, accounts_file)
+    get_stores_fn: callable returning list of (sched_store, queue_dir, accounts_file, brand_id)
                    Called on every tick so new brands are picked up automatically.
     """
     def _loop():
         import time
         while True:
             try:
-                for sched_store, queue_dir, accounts_file in get_stores_fn():
-                    _run_due_posts(sched_store, queue_dir, accounts_file=accounts_file)
+                for sched_store, queue_dir, accounts_file, brand_id in get_stores_fn():
+                    _run_due_posts(sched_store, queue_dir, accounts_file=accounts_file,
+                                   brand_id=brand_id)
             except Exception:
                 pass
             time.sleep(interval)
@@ -223,6 +300,29 @@ def start_scheduler(get_stores_fn, interval: int = 30):
     t = threading.Thread(target=_loop, daemon=True, name="scheduler")
     t.start()
     return t
+
+
+def publish_now(store: ScheduleStore, post_id: str, queue_dir: Path,
+                accounts_file: Path = None, brand_id: str = None,
+                platforms: list = None) -> "dict | None":
+    """Re-run a post synchronously and return the updated result dict, or None if not found.
+
+    platforms: if given, override the post's platform list (for partial retries).
+    """
+    import sys
+    post = store.get_by_id(post_id)
+    if not post:
+        return None
+    if platforms:
+        post = dict(post)
+        post["platforms"] = platforms
+    store.update_status(post_id, "pending", None)
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root))
+    _publish_scheduled(store, post, queue_dir, root,
+                       accounts_file=accounts_file, brand_id=brand_id)
+    updated = store.get_by_id(post_id)
+    return updated
 
 
 # ── Auto-pull runner ─────────────────────────────────────────────────────────

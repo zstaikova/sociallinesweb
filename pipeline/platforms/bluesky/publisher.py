@@ -1,3 +1,4 @@
+import io
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,27 @@ IMAGE_MIMETYPES = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
 }
-MAX_CAPTION = 300
+VIDEO_MIMETYPES = {
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+}
+MAX_CAPTION  = 300
+BSKY_MAX_IMG = 2_000_000  # Bluesky hard limit: 2 MB per image blob
+
+
+def _compress_image(path: Path) -> bytes:
+    from PIL import Image
+    img = Image.open(path).convert("RGB")
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= BSKY_MAX_IMG:
+            return data
+    w, h = img.size
+    img = img.resize((w // 2, h // 2), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=55, optimize=True)
+    return buf.getvalue()
 
 
 class BlueskyPublisher(BasePublisher):
@@ -43,26 +64,42 @@ class BlueskyPublisher(BasePublisher):
 
     def publish(self, item: ContentItem) -> bool:
         try:
-            from atproto import client_utils
+            from atproto import client_utils, models
             client = self._client()
 
             text = (item.caption or "")[:MAX_CAPTION]
             text_builder = client_utils.TextBuilder()
             text_builder.text(text)
 
+            embed = None
             if item.media_path and item.media_path.exists():
-                ext      = item.media_path.suffix.lower()
-                mimetype = IMAGE_MIMETYPES.get(ext, "image/jpeg")
-                with open(item.media_path, "rb") as f:
-                    image_data = f.read()
-                upload = client.upload_blob(image_data)
-                embed  = {
-                    "$type": "app.bsky.embed.images",
-                    "images": [{"image": upload.blob, "alt": text[:1000]}],
-                }
-                post = client.send_post(text_builder, embed=embed)
-            else:
-                post = client.send_post(text_builder)
+                ext = item.media_path.suffix.lower()
+                if ext in IMAGE_MIMETYPES:
+                    size = item.media_path.stat().st_size
+                    if size > BSKY_MAX_IMG:
+                        print(f"  Bluesky: image {size // 1024}KB > 2MB — compressing")
+                        media_data = _compress_image(item.media_path)
+                    else:
+                        with open(item.media_path, "rb") as f:
+                            media_data = f.read()
+                    upload = client.upload_blob(media_data)
+                    embed = models.AppBskyEmbedImages.Main(
+                        images=[models.AppBskyEmbedImages.Image(
+                            image=upload.blob,
+                            alt=text[:1000],
+                        )]
+                    )
+                elif ext in VIDEO_MIMETYPES:
+                    with open(item.media_path, "rb") as f:
+                        media_data = f.read()
+                    upload = client.upload_blob(media_data)
+                    embed = models.AppBskyEmbedVideo.Main(
+                        video=upload.blob,
+                        alt=text[:1000],
+                    )
+                else:
+                    print(f"  Bluesky: unsupported media type '{ext}' — posting text only")
+            post = client.send_post(text_builder, embed=embed)
 
             item.metadata["bluesky_post_id"] = post.uri
             item.posted_at = datetime.now(timezone.utc)

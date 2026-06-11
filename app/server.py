@@ -44,7 +44,7 @@ from flask_limiter.util import get_remote_address
 from urllib.parse import urlencode
 from pipeline.core.accounts import AccountStore
 from users import UserStore
-from scheduler import ScheduleStore, start_scheduler, start_source_puller
+from scheduler import ScheduleStore, start_scheduler, start_source_puller, publish_now
 
 ENV_FILE   = ROOT / ".env"
 DATA_DIR   = ROOT / "data"
@@ -215,7 +215,7 @@ def _get_content_store():
 # ── Multi-brand scheduler/puller helpers ─────────────────────────────────────
 
 def _all_brand_scheduler_data():
-    """Returns list of (sched_store, queue_dir, accounts_file) for all brands."""
+    """Returns list of (sched_store, queue_dir, accounts_file, brand_id) for all brands."""
     result = []
     for brand in _brand_store.list_all():
         bid = brand["id"]
@@ -224,6 +224,7 @@ def _all_brand_scheduler_data():
             _sched_store_for(bid),
             bdir / "queue",
             bdir / "accounts.enc",
+            bid,
         ))
     return result
 
@@ -662,6 +663,9 @@ limiter = Limiter(
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
+from mcp import mcp_bp
+app.register_blueprint(mcp_bp)
+
 
 @app.context_processor
 def _inject_brand_context():
@@ -709,6 +713,8 @@ def no_cache_html(response):
     return response
 
 
+_FORMAT_SUFFIXES = {"_vertical", "_square", "_horizontal", "_wide"}
+
 def _list_dir(folder, reverse=False):
     if not folder.exists():
         return []
@@ -717,14 +723,43 @@ def _list_dir(folder, reverse=False):
         key=lambda f: f.stat().st_mtime,
         reverse=reverse,
     )
-    return [
-        {
-            "filename": f.name,
-            "caption": f.stem.replace("_", " ").replace("-", " "),
-            "mtime": int(f.stat().st_mtime * 1000),  # ms epoch for JS
-        }
-        for f in files
-    ]
+
+    # Group render format variants (abc_vertical, abc_square, abc_horizontal) into one entry
+    groups: dict[str, dict] = {}
+    singles = []
+    for f in files:
+        stem = f.stem
+        matched = None
+        for suffix in _FORMAT_SUFFIXES:
+            if stem.endswith(suffix):
+                prefix = stem[: -len(suffix)]
+                matched = (prefix, suffix.lstrip("_"))
+                break
+        if matched:
+            prefix, fmt = matched
+            if prefix not in groups:
+                groups[prefix] = {
+                    "filename": f.name,  # primary (first seen)
+                    "caption": prefix.replace("_", " ").replace("-", " "),
+                    "mtime": int(f.stat().st_mtime * 1000),
+                    "format_map": {},
+                }
+            groups[prefix]["format_map"][fmt] = f.name
+            # Prefer vertical as primary
+            if fmt == "vertical":
+                groups[prefix]["filename"] = f.name
+        else:
+            singles.append({
+                "filename": f.name,
+                "caption": stem.replace("_", " ").replace("-", " "),
+                "mtime": int(f.stat().st_mtime * 1000),
+                "format_map": {},
+            })
+
+    result = list(groups.values()) + singles
+    if reverse:
+        result.reverse()
+    return result
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
@@ -956,20 +991,38 @@ def index():
 @app.route("/queue")
 @login_required
 def queue():
-    posted_items = _list_dir(_get_posted_dir(), reverse=True)
+    posted_items  = _list_dir(_get_posted_dir(), reverse=True)
+    queue_items   = _list_dir(_get_queue_dir())
     try:
-        sched_stats = _get_sched_store().stats()
-        all_time_posted = sched_stats.get("published", 0)
+        sched_store   = _get_sched_store()
+        sched_stats   = sched_store.stats()
+        sched_posted  = sched_stats.get("published", 0)
+        sched_failed  = sched_stats.get("failed", 0)
+        sched_pending = sched_stats.get("pending", 0)
+        # Files with a pending schedule entry are committed — exclude from raw queue count
+        scheduled_filenames = {p["filename"] for p in sched_store.list_all(status="pending")}
     except Exception:
-        all_time_posted = 0
+        sched_posted = sched_failed = sched_pending = 0
+        scheduled_filenames = set()
+
+    # "Ready to post" = in queue but not yet scheduled
+    unscheduled_count = sum(
+        1 for item in queue_items
+        if item["filename"] not in scheduled_filenames
+    )
+    # "Posted" = posted folder + scheduler published entries (auto-posted)
+    total_posted = len(posted_items) + sched_posted
+
     return render_template(
         "queue.html",
-        images=_list_dir(_get_queue_dir()),
+        images=queue_items,
         posted=posted_items,
         stats={
-            "queue":  len(_list_dir(_get_queue_dir())),
-            "posted": len(posted_items),
-            "db_posted": all_time_posted,
+            "queue":         unscheduled_count,
+            "posted":        total_posted,
+            "sched_posted":  sched_posted,
+            "sched_failed":  sched_failed,
+            "sched_pending": sched_pending,
         },
     )
 
@@ -984,6 +1037,64 @@ def serve_queue_media(filename):
 @login_required
 def serve_posted_media(filename):
     return send_from_directory(_get_posted_dir(), filename)
+
+
+@app.route("/api/scheduled/published")
+@login_required
+def api_scheduled_published():
+    try:
+        items = _get_sched_store().list_all("published")
+        # Return lightweight list sorted newest first
+        out = []
+        for it in reversed(items):
+            result = it.get("result") or {}
+            out.append({
+                "id":           it["id"],
+                "filename":     it["filename"],
+                "platforms":    it["platforms"],
+                "scheduled_at": it["scheduled_at"],
+                "status":       it["status"],
+                "result":       result,
+            })
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/scheduled/failed")
+@login_required
+def api_scheduled_failed():
+    try:
+        items = _get_sched_store().list_all("failed")
+        out = []
+        for it in reversed(items):
+            result = it.get("result") or {}
+            out.append({
+                "id":           it["id"],
+                "filename":     it["filename"],
+                "platforms":    it["platforms"],
+                "scheduled_at": it["scheduled_at"],
+                "status":       it["status"],
+                "result":       result,
+            })
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/posted/list")
+@login_required
+def api_posted_list():
+    try:
+        items = _list_dir(_get_posted_dir(), reverse=True)
+        return jsonify([{
+            "filename":    it["filename"],
+            "caption":     it.get("caption", ""),
+            "mtime":       it.get("mtime", 0),
+            "source":      "manual",
+        } for it in items])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/queue/<path:filename>", methods=["DELETE"])
@@ -1116,8 +1227,20 @@ def editor(filename):
     article_sidecar = _get_queue_dir() / (image_path.stem + ".article.json")
     is_article = article_sidecar.exists()
 
+    # Load brand SEO strategy for editor hints
+    seo_strategy = {}
+    b = _get_active_brand()
+    if b:
+        seo_path = _brand_dir_for(b["id"]) / "seo_strategy.json"
+        if seo_path.exists():
+            try:
+                import json as _json
+                seo_strategy = _json.loads(seo_path.read_text())
+            except Exception:
+                pass
+
     return render_template("editor.html", filename=filename, caption=caption,
-                           is_article=is_article)
+                           is_article=is_article, seo_strategy=seo_strategy)
 
 
 @app.route("/api/generate-captions", methods=["POST"])
@@ -1174,7 +1297,9 @@ def api_publish():
 
     image_path = _get_queue_dir() / filename
     if not image_path.exists():
-        return jsonify({"error": "Image not found"}), 404
+        app.logger.warning("publish: file not found at %s (brand=%s)", image_path,
+                           session.get("active_brand_id"))
+        return jsonify({"error": f"File not found: {image_path.name} (brand {session.get('active_brand_id')})"}), 404
 
     # Report platforms that have no connected account before even running the pipeline
     results = {}
@@ -1253,13 +1378,19 @@ def accounts_page():
         if role == "reviewer" and p["id"] != "tiktok":
             continue
         active = acct.get_active(p["id"])
+        # If the account store failed to load, nothing is reliably connected
+        if acct.load_error:
+            configured = False
+        else:
+            configured = bool(active) or _platform_status_env_only(p)
         platforms.append({
             **p,
             "section":      p.get("section", "social"),
-            "configured":   bool(acct.get_active(p["id"])) or _platform_status_env_only(p),
+            "configured":   configured,
             "account_name": active.account_name if active else None,
         })
-    return render_template("setup.html", platforms=platforms)
+    return render_template("setup.html", platforms=platforms,
+                           account_store_error=acct.load_error)
 
 
 @app.route("/accounts/<platform_id>")
@@ -1319,13 +1450,17 @@ def api_setup_save_keys():
 
 
 def _oauth_callback_url(force_127: bool = False) -> str:
-    """Returns the correct callback URL depending on environment."""
+    """Returns the correct callback URL depending on environment.
+    Always uses localhost when accessed via Cloudflare tunnel or any proxy,
+    since OAuth redirect must resolve in the user's local browser."""
     host = request.host
-    if host.startswith("localhost") or host.startswith("127."):
-        if force_127:
-            host = host.replace("localhost", "127.0.0.1")
-        return f"http://{host}/callback"
-    return "https://app.socialline.space/callback"
+    # If accessed via a public domain (Cloudflare tunnel, etc.), force localhost
+    # so the OAuth redirect goes to the local server, not the suspended domain.
+    if not (host.startswith("localhost") or host.startswith("127.")):
+        host = "localhost:5000"
+    if force_127:
+        host = host.replace("localhost", "127.0.0.1")
+    return f"http://{host}/callback"
 
 
 def _new_oauth_state(platform: str, brand_id: str, user: str, **extra) -> str:
@@ -1356,11 +1491,13 @@ def _resolve_oauth_state(state: str) -> "dict | None":
 @app.route("/callback")
 def oauth_web_callback():
     """Unified OAuth callback for all platforms."""
+    load_dotenv(ENV_FILE, override=True)
     oauth_token    = request.args.get("oauth_token")
     oauth_verifier = request.args.get("oauth_verifier")
     state          = request.args.get("state", "")
     code           = request.args.get("code")
     error_msg      = request.args.get("error")
+    print(f"  [callback] platform state={state[:8] if state else 'none'} code={'yes' if code else 'no'} error={error_msg}")
 
     if oauth_token and oauth_verifier:
         # OAuth 1.0a (X/Twitter)
@@ -1459,13 +1596,15 @@ def _x_exchange_and_save(oauth_token: str, oauth_verifier: str, flow: dict):
 
 def _threads_exchange_and_save(code: str, flow: dict):
     import requests as _req
-    app_id     = os.getenv("THREADS_APP_ID") or ""
-    app_secret = os.getenv("THREADS_APP_SECRET") or ""
+    app_id     = os.getenv("THREADS_APP_ID") or os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+    app_secret = os.getenv("THREADS_APP_SECRET") or os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
     redirect   = _oauth_callback_url() if request else "https://app.socialline.space/callback"
+    print(f"  [threads] exchange: app_id={app_id[:8]}... redirect={redirect}")
     resp = _req.post("https://graph.threads.net/oauth/access_token", data={
         "client_id": app_id, "client_secret": app_secret,
         "grant_type": "authorization_code", "redirect_uri": redirect, "code": code,
     }, timeout=15)
+    print(f"  [threads] token response: {resp.status_code} {resp.text[:200]}")
     resp.raise_for_status()
     data      = resp.json()
     short_tok = data["access_token"]
@@ -1505,18 +1644,26 @@ def _facebook_exchange_and_save(code: str, flow: dict):
         "client_secret": app_secret, "code": code,
     }, timeout=15)
     resp.raise_for_status()
-    short_tok = resp.json()["access_token"]
+    resp_json = resp.json()
+    if "access_token" not in resp_json:
+        raise ValueError(f"Facebook token exchange failed: {resp_json}")
+    short_tok = resp_json["access_token"]
     # Exchange for long-lived token
     resp2 = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
         "grant_type": "fb_exchange_token", "client_id": app_id,
         "client_secret": app_secret, "fb_exchange_token": short_tok,
     }, timeout=15)
     resp2.raise_for_status()
-    long_tok = resp2.json()["access_token"]
+    resp2_json = resp2.json()
+    if "access_token" not in resp2_json:
+        raise ValueError(f"Facebook long-lived token exchange failed: {resp2_json}")
+    long_tok = resp2_json["access_token"]
+    print(f"  [facebook] long-lived token OK, fetching pages...")
     # Get pages
     resp3 = _req.get("https://graph.facebook.com/v18.0/me/accounts",
                      params={"access_token": long_tok, "fields": "id,name,access_token,tasks"},
                      timeout=15)
+    print(f"  [facebook] /me/accounts status={resp3.status_code} body={resp3.text[:300]}")
     resp3.raise_for_status()
     pages = resp3.json().get("data", [])
     if not pages:
@@ -1524,13 +1671,16 @@ def _facebook_exchange_and_save(code: str, flow: dict):
         biz_resp = _req.get("https://graph.facebook.com/v18.0/me/businesses",
                             params={"access_token": long_tok, "fields": "id,name"},
                             timeout=15)
+        print(f"  [facebook] /me/businesses status={biz_resp.status_code} body={biz_resp.text[:300]}")
         if biz_resp.ok:
             for biz in biz_resp.json().get("data", []):
                 biz_id = biz["id"]
+                biz_name = biz.get("name", biz_id)
                 pages_resp = _req.get(f"https://graph.facebook.com/v18.0/{biz_id}/owned_pages",
                                       params={"access_token": long_tok,
                                               "fields": "id,name,access_token"},
                                       timeout=15)
+                print(f"  [facebook] biz={biz_name} owned_pages status={pages_resp.status_code} body={pages_resp.text[:300]}")
                 if pages_resp.ok:
                     pages.extend(pages_resp.json().get("data", []))
     if not pages:
@@ -1551,6 +1701,13 @@ def _facebook_exchange_and_save(code: str, flow: dict):
     flow["fb_page_token"] = pages[0]["access_token"]
     flow["fb_app_id"]     = app_id
     flow["fb_app_secret"] = app_secret
+    # Propagate fresh Facebook page token into any existing Threads credentials
+    threads_acct = acct.get_active("threads")
+    if threads_acct:
+        acct.update_credentials("threads", {
+            "FACEBOOK_PAGE_ID":           pages[0]["id"],
+            "FACEBOOK_PAGE_ACCESS_TOKEN": pages[0]["access_token"],
+        })
 
 
 def _instagram_exchange_and_save(code: str, flow: dict):
@@ -1642,6 +1799,7 @@ def _linkedin_exchange_and_save(code: str, flow: dict):
     import requests as _req
     client_id     = os.getenv("LINKEDIN_CLIENT_ID") or ""
     client_secret = os.getenv("LINKEDIN_CLIENT_SECRET") or ""
+    print(f"  [linkedin] exchange: client_id={'yes' if client_id else 'MISSING'} brand={flow.get('brand_id', '?')}")
     redirect      = _oauth_callback_url() if request else "https://app.socialline.space/callback"
     resp = _req.post("https://www.linkedin.com/oauth/v2/accessToken", data={
         "grant_type": "authorization_code", "code": code,
@@ -1651,17 +1809,26 @@ def _linkedin_exchange_and_save(code: str, flow: dict):
     tokens        = resp.json()
     access_token  = tokens["access_token"]
     refresh_token = tokens.get("refresh_token", "")
-    resp2 = _req.get("https://api.linkedin.com/v2/userinfo",
-                     headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
-    resp2.raise_for_status()
-    info       = resp2.json()
-    person_urn = f"urn:li:person:{info['sub']}"
-    name       = info.get("name", "LinkedIn User")
-    acct = _acct_store_for(flow["brand_id"])
+
+    # Get display name from userinfo — non-fatal if it fails
+    name = "LinkedIn User"
+    sub  = "linkedin"
+    try:
+        resp2 = _req.get("https://api.linkedin.com/v2/userinfo",
+                         headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        if resp2.ok:
+            info = resp2.json()
+            name = info.get("name", name)
+            sub  = info.get("sub", sub)
+    except Exception:
+        pass
+
+    person_urn = f"urn:li:person:{sub}"
+    acct  = _acct_store_for(flow["brand_id"])
     creds = {"LINKEDIN_ACCESS_TOKEN": access_token, "LINKEDIN_PERSON_URN": person_urn}
     if refresh_token:
         creds["LINKEDIN_REFRESH_TOKEN"] = refresh_token
-    acct.add("linkedin", name, info["sub"], creds)
+    acct.add("linkedin", name, sub, creds)
 
 
 def _pinterest_exchange_and_save(code: str, flow: dict):
@@ -1737,7 +1904,7 @@ def api_setup_launch_oauth(platform_id):
         state = _new_oauth_state("facebook", brand_id, user)
         params = urlencode({
             "client_id": app_id, "redirect_uri": redirect,
-            "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,business_management",
+            "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,pages_manage_metadata,business_management",
             "response_type": "code", "state": state,
         })
         auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
@@ -1752,7 +1919,7 @@ def api_setup_launch_oauth(platform_id):
         state = _new_oauth_state("instagram", brand_id, user)
         params = urlencode({
             "client_id": app_id, "redirect_uri": redirect,
-            "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish,business_management",
+            "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,pages_manage_metadata,instagram_basic,instagram_content_publish,business_management",
             "response_type": "code", "state": state,
         })
         auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
@@ -1768,7 +1935,7 @@ def api_setup_launch_oauth(platform_id):
         params = urlencode({
             "response_type": "code", "client_id": client_id,
             "redirect_uri": redirect, "state": state,
-            "scope": "openid profile w_member_social r_basicprofile",
+            "scope": "w_organization_social r_organization_social",
         })
         auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{params}"
         _oauth_account_counts["linkedin"] = len(_get_acct_store().list_all("linkedin"))
@@ -1830,7 +1997,7 @@ def api_setup_launch_oauth(platform_id):
             return jsonify({"error": f"Failed to start X auth: {e}"}), 500
 
     if platform_id == "threads":
-        app_id = os.getenv("THREADS_APP_ID") or ""
+        app_id = os.getenv("THREADS_APP_ID") or os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
         if not app_id:
             return jsonify({"error": "Threads app not configured on this server"}), 500
         state = _new_oauth_state("threads", brand_id, user)
@@ -1840,6 +2007,7 @@ def api_setup_launch_oauth(platform_id):
             "response_type": "code", "state": state,
         })
         auth_url = f"https://threads.net/oauth/authorize?{params}"
+        print(f"  [threads] auth_url redirect_uri={redirect} app_id={app_id}")
         _oauth_account_counts["threads"] = len(_get_acct_store().list_all("threads"))
         return jsonify({"ok": True, "auth_url": auth_url,
             "message": "Authorize with your Threads account."})
@@ -2066,14 +2234,17 @@ def _make_publisher(platform_id: str, credentials: dict = None):
     """Instantiate a publisher for the given platform."""
     mapping = {
         "facebook":     ("pipeline.platforms.facebook.publisher",     "FacebookPublisher"),
-        "instagram":    ("pipeline.platforms.instagram.publisher",    "InstagramPublisher"),
+        "instagram":       ("pipeline.platforms.instagram.publisher",    "InstagramPublisher"),
+        "instagram_reel":  ("pipeline.platforms.instagram.publisher",    "InstagramPublisher"),
+        "instagram_post":  ("pipeline.platforms.instagram.publisher",    "InstagramPublisher"),
         "threads":      ("pipeline.platforms.threads.publisher",      "ThreadsPublisher"),
         "x":            ("pipeline.platforms.x.publisher",            "XPublisher"),
         "tiktok":       ("pipeline.platforms.tiktok.publisher",       "TikTokPublisher"),
         "bluesky":      ("pipeline.platforms.bluesky.publisher",      "BlueskyPublisher"),
         "linkedin":     ("pipeline.platforms.linkedin.publisher",     "LinkedInPublisher"),
         "pinterest":    ("pipeline.platforms.pinterest.publisher",    "PinterestPublisher"),
-        "youtube":      ("pipeline.platforms.youtube.publisher",      "YouTubePublisher"),
+        "youtube":       ("pipeline.platforms.youtube.publisher",      "YouTubePublisher"),
+        "youtube_short": ("pipeline.platforms.youtube.publisher",      "YouTubePublisher"),
         "telegram":     ("pipeline.platforms.telegram.publisher",     "TelegramPublisher"),
         # New platforms
         "substack":     ("pipeline.platforms.substack.publisher",     "SubstackPublisher"),
@@ -2435,6 +2606,41 @@ def api_schedule_delete(post_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/schedule/<post_id>/dismiss", methods=["POST"])
+@login_required
+def api_schedule_dismiss(post_id):
+    _get_sched_store().update_status(post_id, "dismissed")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/schedule/dismiss-all-failed", methods=["POST"])
+@login_required
+def api_schedule_dismiss_all_failed():
+    store = _get_sched_store()
+    items = store.list_all("failed")
+    for it in items:
+        store.update_status(it["id"], "dismissed")
+    return jsonify({"ok": True, "dismissed": len(items)})
+
+
+@app.route("/api/schedule/<post_id>/retry", methods=["POST"])
+@login_required
+def api_schedule_retry(post_id):
+    b = _get_active_brand()
+    if not b:
+        return jsonify({"error": "No active brand"}), 400
+    bid       = b["id"]
+    queue_dir = _brand_dir_for(bid) / "queue"
+    accts     = _brand_dir_for(bid) / "accounts.enc"
+    body      = request.get_json(silent=True) or {}
+    platforms = body.get("platforms") or None  # None = retry all
+    updated = publish_now(_sched_store_for(bid), post_id, queue_dir,
+                          accounts_file=accts, brand_id=bid, platforms=platforms)
+    if updated is None:
+        return jsonify({"error": "Post not found"}), 404
+    return jsonify({"ok": True, "status": updated["status"], "result": updated.get("result") or {}})
+
+
 # ── Default schedule config ────────────────────────────────────────────────
 
 _DEFAULT_SCHED = {
@@ -2511,12 +2717,33 @@ def api_schedule_generate():
     # Collect already-scheduled filenames so we don't double-schedule
     existing = {p["filename"] for p in _get_sched_store().list_all(status="pending")}
 
-    # Queue items not yet scheduled, oldest first
-    queue_items = [
-        f.name for f in sorted(_get_queue_dir().iterdir(), key=lambda x: x.stat().st_mtime)
-        if f.is_file() and f.suffix.lower() in QUEUE_EXTENSIONS
-        and f.name not in existing
-    ]
+    # Group format variants (abc_vertical, abc_square, …) into one entry — same logic as queue display
+    queue_dir = _get_queue_dir()
+    all_files = sorted(
+        (f for f in queue_dir.iterdir() if f.is_file() and f.suffix.lower() in QUEUE_EXTENSIONS),
+        key=lambda f: f.stat().st_mtime,
+    )
+    groups: dict[str, dict] = {}
+    singles = []
+    for f in all_files:
+        stem = f.stem
+        matched = None
+        for suffix in _FORMAT_SUFFIXES:
+            if stem.endswith(suffix):
+                matched = (stem[: -len(suffix)], suffix.lstrip("_"))
+                break
+        if matched:
+            prefix, fmt = matched
+            if prefix not in groups:
+                groups[prefix] = {"filename": f.name, "format_map": {}, "stem": prefix}
+            groups[prefix]["format_map"][fmt] = f.name
+            if fmt == "vertical":
+                groups[prefix]["filename"] = f.name
+        else:
+            singles.append({"filename": f.name, "format_map": {}, "stem": f.stem})
+
+    all_items = list(groups.values()) + singles
+    queue_items = [item for item in all_items if item["filename"] not in existing]
 
     if not queue_items:
         return jsonify({"ok": True, "scheduled": 0, "message": "No unscheduled items in queue"})
@@ -2539,16 +2766,18 @@ def api_schedule_generate():
     occupied = {p["scheduled_at"][:16] for p in pending}   # "YYYY-MM-DDTHH:MM"
     free_slots = [s for s in slots if s.strftime("%Y-%m-%dT%H:%M") not in occupied]
 
-    # Pair free slots with queue items
+    # Pair free slots with grouped queue items (one slot per video, not per format)
     count = 0
-    for slot_dt, filename in zip(free_slots, queue_items):
-        captions = {p: Path(filename).stem.replace("_", " ") for p in platforms}
+    for slot_dt, item in zip(free_slots, queue_items):
+        caption_text = item["stem"].replace("_", " ").replace("-", " ")
+        captions = {p: caption_text for p in platforms}
         _get_sched_store().add(
-            filename=filename,
+            filename=item["filename"],
             captions=captions,
             platforms=platforms,
             platform_options={},
             scheduled_at=slot_dt.isoformat(timespec="minutes"),
+            format_map=item["format_map"] or None,
         )
         count += 1
 
@@ -2585,6 +2814,20 @@ def api_render_video(output_id):
     if not path.exists():
         return "File not found on disk", 404
     return send_file(str(path), mimetype="video/mp4", conditional=True)
+
+
+@app.route("/api/renders/queue", methods=["GET"])
+@login_required
+def api_renders_queue():
+    """Jobs currently rendering or waiting to render."""
+    rs  = _get_render_store()
+    with rs._conn() as con:
+        cur = con.execute(
+            "SELECT id, script_file, status, created_at, updated_at FROM render_jobs "
+            "WHERE status IN ('pending_render','rendering') ORDER BY created_at ASC"
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return jsonify(rows)
 
 
 @app.route("/api/renders/review", methods=["GET"])
@@ -2705,39 +2948,46 @@ def api_render_approve_schedule(job_id):
         groups[key]["platforms"].append(platform)
 
     sched_store = _sched_store_for(b["id"])
-    created = []
+
+    # Copy all format files, build one combined entry
+    format_map = {}
+    all_captions = {}
+    primary_filename = None
+
     for orientation, group in groups.items():
         src = _P(group["file_path"])
         if not src.exists():
             continue
         queue_filename = f"{job_id}_{orientation}.mp4"
-        dst = queue_dir / queue_filename
-        _shutil.copy2(src, dst)
+        _shutil.copy2(src, queue_dir / queue_filename)
+        format_map[orientation] = queue_filename
+        for p in group["platforms"]:
+            cap = captions.get(p, {})
+            all_captions[p] = cap.get("caption", "") if isinstance(cap, dict) else ""
+        if primary_filename is None or orientation == "vertical":
+            primary_filename = queue_filename
 
-        group_captions = {
-            p: (captions.get(p, {}).get("caption", "") if isinstance(captions.get(p), dict) else "")
-            for p in group["platforms"]
-        }
-        primary = next(iter(group_captions.values()), "")
-        if primary:
-            (queue_dir / f"{_P(queue_filename).stem}.caption.txt").write_text(
-                primary, encoding="utf-8"
-            )
+    if not format_map:
+        return jsonify({"ok": True, "scheduled": []})
 
-        post_id = sched_store.add(
-            filename=queue_filename,
-            captions=group_captions,
-            platforms=group["platforms"],
-            platform_options={},
-            scheduled_at=slot.isoformat(timespec="minutes"),
+    primary_caption = next(iter(all_captions.values()), "")
+    if primary_caption and primary_filename:
+        (queue_dir / f"{_P(primary_filename).stem}.caption.txt").write_text(
+            primary_caption, encoding="utf-8"
         )
-        created.append({"post_id": post_id, "filename": queue_filename,
-                        "platforms": group["platforms"]})
 
-    if created:
-        rs.update_status(job_id, "scheduled")
-
-    return jsonify({"ok": True, "scheduled": created})
+    post_id = sched_store.add(
+        filename=primary_filename,
+        captions=all_captions,
+        platforms=req_platforms,
+        platform_options={},
+        scheduled_at=slot.isoformat(timespec="minutes"),
+        format_map=format_map,
+    )
+    rs.update_status(job_id, "scheduled")
+    return jsonify({"ok": True, "scheduled": [{"post_id": post_id,
+                    "filename": primary_filename, "platforms": req_platforms,
+                    "format_map": format_map}]})
 
 
 @app.route("/api/renders/<job_id>/reject", methods=["POST"])

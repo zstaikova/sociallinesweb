@@ -85,6 +85,14 @@ class VideoRenderer:
         self.output_dir     = self.brand_data_dir / "renders"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Merge SEO strategy into brand_config so captions.py can read it
+        seo_path = self.brand_data_dir / "seo_strategy.json"
+        if seo_path.exists():
+            try:
+                self.brand_config = {**brand_config, "seo_strategy": json.loads(seo_path.read_text())}
+            except Exception:
+                pass
+
         from render_store import RenderStore
         self.render_store = RenderStore(brand_id, data_root)
 
@@ -343,7 +351,7 @@ Return the JSON array now:"""
                 cwd=self.remotion_project,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=900,
                 shell=True,
             )
         else:
@@ -358,7 +366,7 @@ Return the JSON array now:"""
                 cwd=self.remotion_project,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=900,
             )
 
         if result.returncode != 0:
@@ -513,10 +521,21 @@ Return the JSON array now:"""
             # Fallback: tomorrow at preferred time regardless of weekday
             return (now + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
 
+        # Only schedule to platforms that have connected accounts
+        from pipeline.core.accounts import AccountStore
+        acct_file = self.brand_data_dir / "accounts.enc"
+        acct_store = AccountStore(acct_file, brand_id=self.brand_id)
+        configured_platforms = {
+            a.platform for a in acct_store.list_all()
+        }
+
         # Group outputs by orientation — one queue file + schedule entry per aspect ratio
         _ORIENT = {"1080x1920": "vertical", "1080x1080": "square"}
         groups: dict[str, dict] = {}
         for out in outputs:
+            if out["platform"] not in configured_platforms:
+                logger.info(f"Skipping {out['platform']} — no connected account")
+                continue
             key = _ORIENT.get(out["dimensions"], "horizontal")
             if key not in groups:
                 groups[key] = {
@@ -526,49 +545,58 @@ Return the JSON array now:"""
                 }
             groups[key]["platforms"].append(out["platform"])
 
-        scheduled = []
+        # Copy all format files to queue and build format_map
+        format_map = {}
+        all_platforms = []
+        all_captions = {}
+        primary_filename = None
+
         for orientation, group in groups.items():
             src = Path(group["file_path"])
             if not src.exists():
                 logger.warning(f"Render output missing: {src}")
                 continue
-
             queue_filename = f"{job_id}_{orientation}.mp4"
             dst = queue_dir / queue_filename
             shutil.copy2(src, dst)
+            format_map[orientation] = queue_filename
+            all_platforms.extend(group["platforms"])
+            for p in group["platforms"]:
+                cap = captions.get(p, {})
+                all_captions[p] = cap.get("caption", "") if isinstance(cap, dict) else ""
+            if primary_filename is None or orientation == "vertical":
+                primary_filename = queue_filename
 
-            # Per-platform captions for this orientation group
-            group_captions = {
-                p: (captions.get(p, {}).get("caption", "") if isinstance(captions.get(p), dict) else "")
-                for p in group["platforms"]
-            }
+        if not format_map:
+            return []
 
-            # Caption sidecar — primary platform's text
-            primary_caption = next(iter(group_captions.values()), "")
-            if primary_caption:
-                (queue_dir / f"{Path(queue_filename).stem}.caption.txt").write_text(
-                    primary_caption, encoding="utf-8"
-                )
-
-            slot    = _next_slot()
-            post_id = sched_store.add(
-                filename=queue_filename,
-                captions=group_captions,
-                platforms=group["platforms"],
-                platform_options={},
-                scheduled_at=slot.isoformat(timespec="minutes"),
+        # Caption sidecar for primary platform
+        primary_caption = next(iter(all_captions.values()), "")
+        if primary_caption and primary_filename:
+            (queue_dir / f"{Path(primary_filename).stem}.caption.txt").write_text(
+                primary_caption, encoding="utf-8"
             )
-            scheduled.append({
-                "post_id":     post_id,
-                "filename":    queue_filename,
-                "orientation": orientation,
-                "platforms":   group["platforms"],
-                "scheduled_at": slot.isoformat(timespec="minutes"),
-            })
-            logger.info(
-                f"Render {job_id} auto-scheduled: {queue_filename} → "
-                f"{slot.strftime('%Y-%m-%d %H:%M')} ({', '.join(group['platforms'])})"
-            )
+
+        slot    = _next_slot()
+        post_id = sched_store.add(
+            filename=primary_filename,
+            captions=all_captions,
+            platforms=all_platforms,
+            platform_options={},
+            scheduled_at=slot.isoformat(timespec="minutes"),
+            format_map=format_map,
+        )
+        scheduled = [{
+            "post_id":    post_id,
+            "filename":   primary_filename,
+            "platforms":  all_platforms,
+            "format_map": format_map,
+            "scheduled_at": slot.isoformat(timespec="minutes"),
+        }]
+        logger.info(
+            f"Render {job_id} auto-scheduled: {primary_filename} → "
+            f"{slot.strftime('%Y-%m-%d %H:%M')} ({', '.join(all_platforms)})"
+        )
 
         if scheduled:
             self.render_store.update_status(job_id, "scheduled")

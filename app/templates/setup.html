@@ -2,6 +2,17 @@
 {% block title %}Accounts — Socialline{% endblock %}
 
 {% block content %}
+{% if account_store_error %}
+<div class="alert alert-danger d-flex align-items-start gap-2 mb-4" role="alert">
+  <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+  <div>
+    <strong>Account credentials could not be loaded.</strong>
+    All platforms shown below may be incorrectly marked as connected.
+    You need to reconnect your accounts.
+    <div class="text-muted small mt-1" style="font-family:monospace;">{{ account_store_error }}</div>
+  </div>
+</div>
+{% endif %}
 <h4 class="mb-4">Connected Accounts</h4>
 
 {% macro platform_card(p) %}
@@ -127,9 +138,19 @@ async function loadAllAccounts() {
 
     if (statusBadge) {
       if (accounts.length) {
-        const name = accounts.find(a => a.active)?.account_name || accounts[0].account_name;
-        statusBadge.textContent = name;
-        statusBadge.className   = 'badge border bg-success-subtle text-success border-success-subtle';
+        const active = accounts.find(a => a.active) || accounts[0];
+        const ageDays = active.created_at
+          ? Math.floor((Date.now() - new Date(active.created_at + 'Z').getTime()) / 86400000)
+          : null;
+        const _TOKEN_WARN_PLATFORMS = ['facebook', 'instagram', 'threads', 'linkedin', 'tiktok', 'pinterest'];
+        const warnAge = _TOKEN_WARN_PLATFORMS.includes(pid) && ageDays !== null && ageDays >= 50;
+        const expireSoon = warnAge && ageDays >= 55;
+        statusBadge.textContent = expireSoon ? `${active.account_name} — reconnect` : active.account_name;
+        statusBadge.className = expireSoon
+          ? 'badge border bg-danger-subtle text-danger border-danger-subtle'
+          : warnAge
+          ? 'badge border bg-warning-subtle text-warning border-warning-subtle'
+          : 'badge border bg-success-subtle text-success border-success-subtle';
       } else {
         statusBadge.textContent = 'Not connected';
         statusBadge.className   = 'badge border bg-secondary-subtle text-secondary border-secondary-subtle';
@@ -142,10 +163,21 @@ async function loadAllAccounts() {
       return;
     }
 
-    container.innerHTML = accounts.map(a => `
+    const _TOKEN_WARN_PLATFORMS = ['facebook', 'instagram', 'threads', 'linkedin', 'tiktok', 'pinterest'];
+    container.innerHTML = accounts.map(a => {
+      const ageDays = a.created_at
+        ? Math.floor((Date.now() - new Date(a.created_at + 'Z').getTime()) / 86400000)
+        : null;
+      const warnAge = _TOKEN_WARN_PLATFORMS.includes(pid) && ageDays !== null && ageDays >= 50;
+      const expireSoon = warnAge && ageDays >= 55;
+      const ageHtml = ageDays !== null
+        ? `<span class="badge ${expireSoon ? 'bg-danger-subtle text-danger border-danger-subtle' : warnAge ? 'bg-warning-subtle text-warning border-warning-subtle' : 'bg-light text-muted border-0'} border ms-1" style="font-size:.6rem;" title="Token connected ${ageDays}d ago${warnAge ? ' — reconnect recommended' : ''}">${ageDays}d${warnAge ? ' ⚠' : ''}</span>`
+        : '';
+      return `
       <div class="d-flex align-items-center gap-2 py-1">
-        <i class="bi bi-check-circle-fill text-success" style="font-size:.8rem;"></i>
+        <i class="bi bi-check-circle-fill text-${expireSoon ? 'danger' : warnAge ? 'warning' : 'success'}" style="font-size:.8rem;"></i>
         <span class="small flex-grow-1 text-truncate fw-medium">${a.account_name}</span>
+        ${ageHtml}
         ${accounts.length > 1 && !a.active
           ? `<button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.7rem;" onclick="setActive('${a.id}','${pid}')">activate</button>`
           : (accounts.length > 1 ? '<span class="badge bg-success-subtle text-success border border-success-subtle" style="font-size:.65rem;">active</span>' : '')}
@@ -153,7 +185,8 @@ async function loadAllAccounts() {
                 onclick="logOut('${a.id}','${a.account_name.replace(/'/g,"\\'")}','${pid}')">
           Log Out
         </button>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   });
 }
 

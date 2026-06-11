@@ -125,9 +125,10 @@ class Account:
 
 class AccountStore:
     def __init__(self, accounts_file: Path = None, brand_id: str = None):
-        self._file     = accounts_file or ACCOUNTS_FILE
-        self._brand_id = brand_id
+        self._file          = accounts_file or ACCOUNTS_FILE
+        self._brand_id      = brand_id
         self._accounts: list[Account] = []
+        self.load_error: str | None = None
         self._load()
 
     def _fernet(self):
@@ -145,7 +146,9 @@ class AccountStore:
             encrypted = self._file.read_bytes()
             data = json.loads(self._fernet().decrypt(encrypted))
             self._accounts = [Account(a) for a in data.get("accounts", [])]
+            self.load_error = None
         except Exception as e:
+            self.load_error = str(e)
             print(f"Warning: could not load {self._file.name}: {e}")
             self._accounts = []
 
@@ -167,6 +170,7 @@ class AccountStore:
         if existing:
             existing.account_name = account_name
             existing.credentials  = credentials
+            existing.created_at   = datetime.utcnow().isoformat()
             self._save()
             return existing
 
@@ -217,8 +221,19 @@ class AccountStore:
         accounts = [a for a in self._accounts if a.platform == platform]
         return next((a for a in accounts if a.active), accounts[0] if accounts else None)
 
+    # Platforms that share credentials with another platform
+    _PLATFORM_ALIASES = {
+        "youtube_short":   "youtube",
+        "instagram_reel":  "instagram",
+        "instagram_post":  "instagram",
+    }
+
     def get_credentials(self, platform: str) -> dict:
         account = self.get_active(platform)
+        if not account:
+            alias = self._PLATFORM_ALIASES.get(platform)
+            if alias:
+                account = self.get_active(alias)
         return account.credentials if account else {}
 
     def update_credentials(self, platform: str, partial: dict):

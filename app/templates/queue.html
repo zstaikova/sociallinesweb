@@ -16,16 +16,51 @@
 <div class="stats-bar">
   <div class="stat-chip">
     <i class="bi bi-images text-primary"></i>
-    <div><div class="stat-num">{{ stats.queue }}</div><div>In queue</div></div>
+    <div><div class="stat-num" id="stat-queue-num">{{ stats.queue }}</div><div>In queue</div></div>
   </div>
-  <div class="stat-chip">
-    <i class="bi bi-check2-circle text-success"></i>
-    <div><div class="stat-num">{{ stats.posted }}</div><div>Posted</div></div>
+  <div style="position:relative;">
+    <div class="stat-chip stat-chip-clickable" id="stat-published" onclick="togglePublishedPanel()" title="Click to see posted" style="cursor:pointer;">
+      <i class="bi bi-check2-circle text-success"></i>
+      <div><div class="stat-num" id="stat-posted-num">{{ stats.posted }}</div><div>Posted <i class="bi bi-chevron-down" id="published-chevron" style="font-size:.65rem;opacity:.6;"></i></div></div>
+    </div>
+    <div id="published-panel" class="d-none" style="
+      position:absolute;top:calc(100% + 6px);left:0;z-index:1050;
+      background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+      box-shadow:0 8px 24px rgba(0,0,0,.12);
+      min-width:520px;max-width:620px;max-height:540px;overflow-y:auto;
+    ">
+      <div style="position:sticky;top:0;background:#fff;border-bottom:1px solid #f1f5f9;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;z-index:1;">
+        <span class="fw-semibold" style="font-size:.85rem;">Posted</span>
+        <a href="/calendar?tab=recent" class="text-decoration-none" style="font-size:.75rem;color:#6366f1;">View in calendar →</a>
+      </div>
+      <div id="published-panel-body" class="text-muted small">Loading…</div>
+    </div>
   </div>
-  <div class="stat-chip">
-    <i class="bi bi-bar-chart text-secondary"></i>
-    <div><div class="stat-num">{{ stats.db_posted }}</div><div>All time</div></div>
+  <div style="position:relative;">
+    <div class="stat-chip stat-chip-clickable" id="stat-failed" onclick="toggleFailedPanel()" title="Click to see failed posts" style="cursor:pointer;">
+      <i class="bi bi-x-circle text-danger"></i>
+      <div><div class="stat-num">{{ stats.sched_failed }}</div><div>Failed <i class="bi bi-chevron-down" id="failed-chevron" style="font-size:.65rem;opacity:.6;"></i></div></div>
+    </div>
+    <div id="failed-panel" class="d-none" style="
+      position:absolute;top:calc(100% + 6px);left:0;z-index:1050;
+      background:#fff;border:1px solid #e2e8f0;border-radius:12px;
+      box-shadow:0 8px 24px rgba(0,0,0,.12);
+      min-width:520px;max-width:620px;max-height:540px;overflow-y:auto;
+    ">
+      <div style="position:sticky;top:0;background:#fff;border-bottom:1px solid #f1f5f9;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;z-index:1;">
+        <span class="fw-semibold" style="font-size:.85rem;">Failed &amp; Partial</span>
+        <div class="d-flex align-items-center gap-3">
+          <button onclick="dismissAllFailed()" style="font-size:.72rem;background:none;border:none;color:#94a3b8;cursor:pointer;padding:0;" title="Dismiss all">Clear all</button>
+          <a href="/calendar?tab=failed" class="text-decoration-none" style="font-size:.75rem;color:#ef4444;">View in calendar →</a>
+        </div>
+      </div>
+      <div id="failed-panel-body" class="text-muted small">Loading…</div>
+    </div>
   </div>
+  <a href="/calendar" class="stat-chip stat-chip-clickable text-decoration-none" style="cursor:pointer;" title="View calendar">
+    <i class="bi bi-clock text-warning"></i>
+    <div><div class="stat-num">{{ stats.sched_pending }}</div><div>Scheduled</div></div>
+  </a>
 
   <!-- View segmented control -->
   <div class="view-seg ms-auto" id="view-seg" role="group" aria-label="View">
@@ -200,7 +235,7 @@
 <div class="section-header mt-2">
   <span class="section-title">Posted</span>
   <span class="badge bg-success-subtle text-success border border-success-subtle ms-1"
-        style="font-size:.7rem;">{{ posted|length }}</span>
+        style="font-size:.7rem;" id="posted-section-badge">{{ posted|length }}</span>
   <button class="btn btn-sm ms-2" style="font-size:.7rem;padding:1px 8px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#6b7280;"
           onclick="clearAllPosted()" title="Remove all posted items">Clear all</button>
   <div class="section-divider"></div>
@@ -226,6 +261,150 @@
 {% block scripts %}
 <script>
 const PLATS_ALL = ['facebook','instagram','threads','x','tiktok','bluesky','linkedin','pinterest','substack','etsy','medium','substack_notes'];
+
+// ── Published panel ───────────────────────────────────────────────────────────
+let publishedPanelOpen = false;
+let publishedLoaded    = false;
+
+function togglePublishedPanel() {
+  const panel   = document.getElementById('published-panel');
+  const chevron = document.getElementById('published-chevron');
+  publishedPanelOpen = !publishedPanelOpen;
+  panel.classList.toggle('d-none', !publishedPanelOpen);
+  chevron.style.transform = publishedPanelOpen ? 'rotate(180deg)' : '';
+  if (publishedPanelOpen && !publishedLoaded) loadPublishedPanel();
+}
+
+async function loadPublishedPanel() {
+  const body = document.getElementById('published-panel-body');
+  try {
+    const [schedRes, manualRes] = await Promise.all([
+      fetch('/api/scheduled/published'),
+      fetch('/api/posted/list'),
+    ]);
+    const schedItems  = await schedRes.json();
+    const manualItems = await manualRes.json();
+    publishedLoaded = true;
+
+    if (!schedItems.length && !manualItems.length) {
+      body.innerHTML = '<div class="text-center py-3 text-muted">No posted items yet.</div>';
+      return;
+    }
+
+    const schedHtml = schedItems.map(it => renderHistCard(it, 'published')).join('');
+    const manualHtml = manualItems.map(it => `
+      <div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;">
+        <div class="d-flex justify-content-between align-items-center gap-2">
+          <span class="fw-semibold" style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;" title="${it.filename}">${it.filename.replace(/\.[^.]+$/, '')}</span>
+          <span style="font-size:.72rem;color:#94a3b8;white-space:nowrap;">${fmtDate(it.mtime)}</span>
+        </div>
+        <span class="badge rounded-pill text-bg-secondary mt-1" style="font-size:.6rem;">moved manually</span>
+      </div>`).join('');
+
+    body.innerHTML = schedHtml + manualHtml;
+  } catch(e) {
+    body.innerHTML = `<div class="text-danger p-3">Failed to load: ${e}</div>`;
+  }
+}
+
+// Close panels when clicking outside
+document.addEventListener('click', e => {
+  if (publishedPanelOpen) {
+    const chip = document.getElementById('stat-published');
+    if (!chip.closest('div').contains(e.target)) {
+      publishedPanelOpen = false;
+      document.getElementById('published-panel').classList.add('d-none');
+      document.getElementById('published-chevron').style.transform = '';
+    }
+  }
+  if (failedPanelOpen) {
+    const chip = document.getElementById('stat-failed');
+    if (!chip.closest('div').contains(e.target)) {
+      failedPanelOpen = false;
+      document.getElementById('failed-panel').classList.add('d-none');
+      document.getElementById('failed-chevron').style.transform = '';
+    }
+  }
+});
+
+// ── Failed panel ──────────────────────────────────────────────────────────────
+let failedPanelOpen = false;
+let failedLoaded    = false;
+
+function toggleFailedPanel() {
+  const panel   = document.getElementById('failed-panel');
+  const chevron = document.getElementById('failed-chevron');
+  failedPanelOpen = !failedPanelOpen;
+  panel.classList.toggle('d-none', !failedPanelOpen);
+  chevron.style.transform = failedPanelOpen ? 'rotate(180deg)' : '';
+  if (failedPanelOpen && !failedLoaded) loadFailedPanel();
+}
+
+async function loadFailedPanel() {
+  const body = document.getElementById('failed-panel-body');
+  try {
+    const res   = await fetch('/api/scheduled/failed');
+    const items = await res.json();
+    failedLoaded = true;
+    if (!items.length) {
+      body.innerHTML = '<div class="text-center py-3 text-muted">No failed posts.</div>';
+      return;
+    }
+    body.innerHTML = items.map(it => renderHistCard(it, it.status)).join('');
+  } catch(e) {
+    body.innerHTML = `<div class="text-danger p-3">Failed to load: ${e}</div>`;
+  }
+}
+
+// ── Shared history card renderer ──────────────────────────────────────────────
+const fmtDate = s => s
+  ? new Date(typeof s === 'number' ? s : s).toLocaleString(undefined, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+  : '—';
+
+function renderHistCard(it, status) {
+  const results = it.result || {};
+  const hasResults = Object.keys(results).length > 0;
+
+  // Status badge
+  const statusBadge = {
+    published: `<span style="font-size:.7rem;font-weight:600;color:#16a34a;">✅ Posted</span>`,
+    partial:   `<span style="font-size:.7rem;font-weight:600;color:#d97706;">⚠ Partial</span>`,
+    failed:    `<span style="font-size:.7rem;font-weight:600;color:#dc2626;">❌ Failed</span>`,
+  }[status] || `<span style="font-size:.7rem;color:#6b7280;">${status}</span>`;
+
+  // Platform chips — inline coloured icons
+  const platChips = hasResults
+    ? Object.entries(results).map(([plat, r]) => {
+        if (!r || typeof r !== 'object') return '';
+        const ok = r.status === 'posted' || r.ok || r.post_id || r.id || r.media_id;
+        const skip = r.status === 'skipped';
+        const ico = skip ? '⏭' : ok ? '✅' : '❌';
+        const tip = skip ? (r.detail||'skipped') : ok ? (r.post_id||r.id||'posted') : (r.detail||r.error||r.status||'?');
+        return `<span title="${tip.toString().replace(/"/g,'&quot;')}" style="font-size:.72rem;margin-right:6px;white-space:nowrap;">${ico} <b>${plat}</b></span>`;
+      }).join('')
+    : (it.platforms||[]).map(p => `<span style="font-size:.72rem;color:#94a3b8;margin-right:6px;">${p}</span>`).join('');
+
+  const date = fmtDate(it.scheduled_at || it.created_at);
+  const title = (it.filename||'').replace(/\.[^.]+$/, '').replace(/_/g,' ');
+
+  const dismissBtn = status !== 'published'
+    ? `<button onclick="dismissFailed('${it.id}',this)" title="Dismiss" style="font-size:.7rem;background:none;border:none;color:#cbd5e1;cursor:pointer;padding:0;line-height:1;" onmouseover="this.style.color='#94a3b8'" onmouseout="this.style.color='#cbd5e1'">✕</button>`
+    : '';
+
+  return `
+    <div id="hist-card-${it.id}"
+         data-scheduled-at="${it.scheduled_at||it.created_at||''}"
+         data-filename="${(it.filename||'').replace(/"/g,'&quot;')}"
+         style="padding:12px 14px;border-bottom:1px solid #f1f5f9;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <span style="font-size:.72rem;color:#94a3b8;">${date}</span>
+        <div style="display:flex;align-items:center;gap:8px;" id="hist-badge-${it.id}">${statusBadge}${dismissBtn}</div>
+      </div>
+      <div style="font-size:.84rem;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px;" title="${it.filename||''}">${title}</div>
+      <div id="hist-plats-${it.id}" style="display:flex;flex-wrap:wrap;gap:2px 0;margin-bottom:${status!=='published'?'8':'0'}px;">${platChips}</div>
+      <div id="hist-retry-${it.id}">${status !== 'published' ? buildRetryBlock(it.id, results) : ''}</div>
+    </div>`;
+}
 
 // Show accounts banner if no platforms have credentials
 (async () => {
@@ -330,7 +509,15 @@ async function postInline(cid, filename) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ filename, captions, platforms }),
     });
-    const results = await res.json();
+    const body = await res.json();
+    if (!res.ok && body.error) {
+      resultEl.style.display = 'block';
+      resultEl.style.background = '#fef2f2'; resultEl.style.border = '1px solid #fecaca'; resultEl.style.color = '#111';
+      resultEl.innerHTML = `<span style="color:#dc2626;">⚠ ${body.error}</span>`;
+      btn.disabled = false; btn.innerHTML = '<i class="bi bi-send me-1"></i>Post now';
+      return;
+    }
+    const results = body;
 
     let posted = 0, failed = 0, lines = [];
     const authFailed = [];
@@ -377,11 +564,131 @@ function openSchedule(cid, filename) {
   window.location.href = '/queue/' + encodeURIComponent(filename) + '?schedule=1';
 }
 
+// ── Retry failed/partial post ───────────────────────────────────
+async function retryPost(postId, selectedPlatforms, btn) {
+  btn.disabled = true;
+  btn.textContent = '↺ Posting…';
+  try {
+    const res  = await fetch(`/api/schedule/${postId}/retry`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ platforms: selectedPlatforms }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      btn.textContent = '✗ ' + (data.error || 'Error');
+      btn.style.color = '#dc2626';
+      btn.disabled = false;
+      return;
+    }
+
+    const result    = data.result || {};
+    const newStatus = data.status;
+
+    if (newStatus === 'published') {
+      // Fully succeeded — flip card to green, strip retry UI
+      const badgeEl = document.getElementById('hist-badge-' + postId);
+      if (badgeEl) badgeEl.innerHTML = `<span style="font-size:.7rem;font-weight:600;color:#16a34a;">✅ Posted</span>`;
+
+      const platsEl = document.getElementById('hist-plats-' + postId);
+      if (platsEl) {
+        platsEl.style.marginBottom = '0';
+        platsEl.innerHTML = Object.entries(result).map(([plat, r]) => {
+          const ok = r && (r.status === 'posted' || r.post_id || r.id);
+          const tip = ok ? (r.post_id || r.id || 'posted') : (r.detail || r.status || '?');
+          return `<span title="${tip.toString().replace(/"/g,'&quot;')}" style="font-size:.72rem;margin-right:6px;white-space:nowrap;">${ok?'✅':'❌'} <b>${plat}</b></span>`;
+        }).join('');
+      }
+
+      const retryEl = document.getElementById('hist-retry-' + postId);
+      if (retryEl) retryEl.innerHTML = '';
+
+      // Update stat chips
+      const failedChip = document.querySelector('#stat-failed .stat-num');
+      if (failedChip) failedChip.textContent = Math.max(0, parseInt(failedChip.textContent || '0') - 1);
+      const postedChip = document.getElementById('stat-posted-num');
+      if (postedChip) postedChip.textContent = parseInt(postedChip.textContent || '0') + 1;
+      publishedLoaded = false;
+    } else {
+      // Still partial/failed — show per-platform lines then updated retry block
+      const retryEl = document.getElementById('hist-retry-' + postId);
+      const platforms = selectedPlatforms || Object.keys(result);
+      const lines = platforms.map(p => {
+        const r   = result[p] || {};
+        const ok  = r.status === 'posted' || r.ok || r.post_id || r.id;
+        const ico = ok ? '✅' : '❌';
+        const msg = ok ? (r.post_id || r.id || 'posted') : (r.detail || r.error || r.status || '?');
+        return `<div style="font-size:.72rem;color:#555;margin-top:2px;">${ico} <b>${p}</b>: ${msg}</div>`;
+      }).join('');
+      if (retryEl) retryEl.innerHTML = lines + buildRetryBlock(postId, result);
+    }
+  } catch(e) {
+    btn.textContent = '✗ Error';
+    btn.disabled = false;
+  }
+}
+
+async function dismissFailed(postId, btn) {
+  await fetch(`/api/schedule/${postId}/dismiss`, {method: 'POST'});
+  document.getElementById('hist-card-' + postId)?.remove();
+  // Update Failed chip count
+  const chip = document.querySelector('#stat-failed .stat-num');
+  if (chip) chip.textContent = Math.max(0, parseInt(chip.textContent || '0') - 1);
+  failedLoaded = false;
+}
+
+async function dismissAllFailed() {
+  await fetch('/api/schedule/dismiss-all-failed', {method: 'POST'});
+  document.getElementById('failed-panel-body').innerHTML = '<div class="text-center py-3 text-muted">No failed posts.</div>';
+  const chip = document.querySelector('#stat-failed .stat-num');
+  if (chip) chip.textContent = '0';
+  failedLoaded = false;
+}
+
+function buildRetryBlock(postId, results) {
+  // Top-level {"error": "..."} means whole post failed — no per-platform breakdown
+  if (results.error && typeof results.error === 'string') {
+    const uid = 'retry-' + postId;
+    return `<div style="margin-top:8px;font-size:.72rem;color:#dc2626;margin-bottom:6px;">⚠ ${results.error}</div>
+      <button onclick="retryPost('${postId}',null,this)"
+        style="font-size:.7rem;padding:2px 10px;border-radius:6px;border:1px solid #6366f1;background:#eef2ff;color:#4f46e5;cursor:pointer;">↺ Retry all</button>`;
+  }
+  const failed = Object.entries(results)
+    .filter(([, r]) => r && typeof r === 'object' && r.status !== 'posted' && r.status !== 'skipped')
+    .map(([p]) => p);
+  if (!failed.length) return '';
+  const uid = 'retry-' + postId;
+  const checks = failed.map(p =>
+    `<label style="font-size:.7rem;margin-right:8px;cursor:pointer;">
+      <input type="checkbox" name="${uid}" value="${p}" checked style="margin-right:3px;">${p}
+    </label>`
+  ).join('');
+  return `
+    <div style="margin-top:8px;">
+      <div style="margin-bottom:4px;">${checks}</div>
+      <button onclick="
+        const boxes=[...document.querySelectorAll('input[name=${uid}]:checked')].map(c=>c.value);
+        if(!boxes.length){alert('Select at least one platform.');return;}
+        retryPost('${postId}',boxes,this)
+      " style="font-size:.7rem;padding:2px 10px;border-radius:6px;border:1px solid #6366f1;background:#eef2ff;color:#4f46e5;cursor:pointer;">↺ Retry selected</button>
+    </div>`;
+}
+
 // ── Move to posted ──────────────────────────────────────────────
 async function moveToPosted(filename, btn, cardId) {
   if (btn) { btn.disabled = true; btn.innerHTML = '…'; }
-  await fetch('/api/queue/' + encodeURIComponent(filename) + '/move-to-posted', {method: 'POST'});
-  document.getElementById(cardId)?.remove();
+  const res = await fetch('/api/queue/' + encodeURIComponent(filename) + '/move-to-posted', {method: 'POST'});
+  if (!res.ok) { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-check2"></i>'; } return; }
+  const card = document.getElementById(cardId)
+    || document.querySelector(`[data-filename="${CSS.escape(filename)}"]`);
+  card?.remove();
+  const qNum = document.getElementById('stat-queue-num');
+  if (qNum) qNum.textContent = Math.max(0, parseInt(qNum.textContent || '0') - 1);
+  const pNum = document.getElementById('stat-posted-num');
+  if (pNum) pNum.textContent = parseInt(pNum.textContent || '0') + 1;
+  const badge = document.getElementById('posted-section-badge');
+  if (badge) badge.textContent = parseInt(badge.textContent || '0') + 1;
+  publishedLoaded = false; // force panel to reload next open
 }
 
 // ── Delete ──────────────────────────────────────────────────────

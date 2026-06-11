@@ -62,19 +62,39 @@ def generate_caption(script: str, platform: str, brand_config: dict,
     Generate a single platform-specific caption via Claude API.
     Returns dict with 'caption' and 'hashtags' keys.
     """
-    rules = PLATFORM_RULES.get(platform, PLATFORM_RULES["facebook"])
+    seo = brand_config.get("seo_strategy", {})
+
+    # Platform rules: SEO strategy overrides generic defaults
+    seo_rules = seo.get("platform_rules", {}).get(platform, {})
+    base_rules = PLATFORM_RULES.get(platform, PLATFORM_RULES["facebook"])
+    rules = {**base_rules, **seo_rules}
 
     brand_voice   = brand_config.get("voice",
                         "warm, bold, parent-to-parent. Never academic. Always specific.")
     brand_name    = brand_config.get("name", "")
     brand_website = brand_config.get("website", "")
 
+    # SEO enrichments
+    keywords = seo.get("keywords", {}).get(platform, [])
+    hashtags = seo.get("hashtags", {}).get(platform, [])
+    cta      = seo.get("cta", {}).get(platform, "")
+
+    keywords_block = ""
+    if keywords:
+        keywords_block = f"\nSEO KEYWORDS TO WEAVE IN NATURALLY:\n" + "\n".join(f"- {k}" for k in keywords)
+
+    hashtags_block = ""
+    if hashtags:
+        hashtags_block = f"\nHASHTAGS TO USE:\n{' '.join(hashtags)}"
+
+    cta_block = f"\nCALL TO ACTION: {cta}" if cta else f"\nALWAYS END WITH: {brand_website}"
+
     prompt = f"""You are writing a {platform} caption for {brand_name}.
 
 BRAND VOICE: {brand_voice}
 PILLAR: {pillar}
 TOPIC: {topic}
-TONE: {tone}
+TONE: {tone}{keywords_block}{hashtags_block}{cta_block}
 
 VIDEO SCRIPT:
 {script}
@@ -82,14 +102,11 @@ VIDEO SCRIPT:
 PLATFORM RULES FOR {platform.upper()}:
 - Maximum characters: {rules["max_chars"]}
 - Tone: {rules["tone"]}
-- Hashtags: {rules["hashtags"]}
-- Notes: {rules["notes"]}
-
-ALWAYS END WITH: {brand_website}
+- Notes: {rules.get("notes", "")}
 
 Return ONLY a JSON object with these fields:
 {{
-  "caption": "the full caption text",
+  "caption": "the full caption text including CTA and hashtags",
   "hashtags": ["hashtag1", "hashtag2"]
 }}
 

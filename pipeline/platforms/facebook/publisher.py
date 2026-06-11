@@ -11,11 +11,11 @@ from pipeline.core.content_item import ContentItem
 
 GRAPH_URL    = "https://graph.facebook.com/v19.0"
 MAX_BYTES    = 4 * 1024 * 1024   # Facebook /photos multipart limit
-MAX_CAPTION  = 2_000              # characters — long captions cause API code:1 errors
+MAX_CAPTION  = 2_000
+VIDEO_EXTS   = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
 
 def _compress_image(path: Path) -> tuple[bytes, str]:
-    """Return (jpeg_bytes, mime_type) compressed to under MAX_BYTES."""
     img = Image.open(path).convert("RGB")
     for quality in (85, 70, 55, 40):
         buf = io.BytesIO()
@@ -23,7 +23,6 @@ def _compress_image(path: Path) -> tuple[bytes, str]:
         data = buf.getvalue()
         if len(data) <= MAX_BYTES:
             return data, "image/jpeg"
-    # Last resort: halve dimensions
     w, h = img.size
     img = img.resize((w // 2, h // 2), Image.LANCZOS)
     buf = io.BytesIO()
@@ -69,11 +68,47 @@ class FacebookPublisher(BasePublisher):
         if not item.media_path or not item.media_path.exists():
             print("  No media file to publish")
             return False
+        if item.media_path.suffix.lower() in VIDEO_EXTS:
+            return self._publish_video(item)
+        return self._publish_image(item)
 
+    def _publish_video(self, item: ContentItem) -> bool:
+        caption = self._build_caption(item)
+        path    = item.media_path
+        for attempt in range(2):
+            try:
+                with open(path, "rb") as f:
+                    resp = requests.post(
+                        f"{GRAPH_URL}/{self.page_id}/videos",
+                        data={"description": caption, "access_token": self.access_token},
+                        files={"source": (path.name, f, "video/mp4")},
+                        timeout=180,
+                    )
+                if resp.ok:
+                    post_id = resp.json().get("id")
+                    item.metadata["facebook_post_id"] = post_id
+                    item.posted_at = datetime.utcnow()
+                    print(f"  Facebook video posted: {post_id}")
+                    return True
+                err = resp.json().get("error", {}) if "application/json" in resp.headers.get("content-type", "") else {}
+                if err.get("code") in (1, 2) and attempt == 0:
+                    print(f"  Facebook: transient error — retrying in 5s")
+                    time.sleep(5)
+                    continue
+                print(f"  Facebook video error: {resp.status_code} {resp.text[:300]}")
+                return False
+            except Exception as e:
+                print(f"  Facebook video exception: {e}")
+                if attempt == 0:
+                    time.sleep(3)
+                    continue
+                return False
+        return False
+
+    def _publish_image(self, item: ContentItem) -> bool:
         caption = self._build_caption(item)
         path    = item.media_path
         size    = path.stat().st_size
-
         for attempt in range(2):
             try:
                 if size > MAX_BYTES:
@@ -89,27 +124,23 @@ class FacebookPublisher(BasePublisher):
                     files=files,
                     timeout=60,
                 )
-
                 if hasattr(files["source"], "close"):
                     files["source"].close()
 
                 if resp.ok:
-                    data = resp.json()
+                    data   = resp.json()
                     post_id = data.get("post_id") or data.get("id")
                     item.metadata["facebook_post_id"] = post_id
                     item.posted_at = datetime.utcnow()
                     return True
 
-                err = resp.json().get("error", {}) if resp.headers.get("content-type", "").startswith("application/json") else {}
-                # Code 1 / 2 are transient — retry once after a short wait
+                err = resp.json().get("error", {}) if "application/json" in resp.headers.get("content-type", "") else {}
                 if err.get("code") in (1, 2) and attempt == 0:
                     print(f"  Facebook: transient error (code {err.get('code')}) — retrying in 5s")
                     time.sleep(5)
                     continue
-
                 print(f"  Facebook API error: {resp.status_code} {resp.text}")
                 return False
-
             except Exception as e:
                 print(f"  Facebook publish exception: {e}")
                 if attempt == 0:

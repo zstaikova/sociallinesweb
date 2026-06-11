@@ -24,11 +24,21 @@
   <!-- Right column: Upcoming + Default Schedule -->
   <div class="col-12 col-lg-4 d-flex flex-column gap-3">
 
-    <!-- Upcoming -->
+    <!-- Upcoming / Recent tabs -->
     <div class="card shadow-sm">
       <div class="card-body p-3">
-        <h6 class="fw-bold mb-3">Upcoming</h6>
+        <div class="d-flex gap-2 mb-2 flex-wrap">
+          <button class="btn btn-sm btn-primary" id="tab-upcoming" onclick="switchTab('upcoming')">Upcoming</button>
+          <button class="btn btn-sm btn-outline-secondary" id="tab-recent" onclick="switchTab('recent')">All recent</button>
+          <button class="btn btn-sm btn-outline-danger" id="tab-failed" onclick="switchTab('failed')">Failed</button>
+        </div>
         <div id="upcoming-list">
+          <div class="text-muted small text-center py-4">Loading…</div>
+        </div>
+        <div id="recent-list" class="d-none">
+          <div class="text-muted small text-center py-4">Loading…</div>
+        </div>
+        <div id="failed-list" class="d-none">
           <div class="text-muted small text-center py-4">Loading…</div>
         </div>
       </div>
@@ -131,9 +141,10 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body" id="eventModalBody"></div>
-      <div class="modal-footer border-0 pt-0">
+      <div class="modal-body pt-0 d-none" id="eventModalRetry"></div>
+      <div class="modal-footer border-0 pt-0 gap-2">
         <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
-        <button class="btn btn-sm btn-danger" id="eventModalDelete" onclick="deleteEvent()">
+        <button class="btn btn-sm btn-danger d-none" id="eventModalDelete" onclick="deleteEvent()">
           <i class="bi bi-trash me-1"></i>Cancel Post
         </button>
       </div>
@@ -183,7 +194,7 @@
 <script>
 let _calendar = null;
 let _activeEventId = null;
-const STATUS_COLOR = { pending: '#4361ee', published: '#16a34a', failed: '#dc2626', cancelled: '#9ca3af' };
+const STATUS_COLOR = { pending: '#4361ee', published: '#16a34a', failed: '#dc2626', partial: '#d97706', cancelled: '#9ca3af' };
 const ALL_PLATFORMS = ['facebook','instagram','threads','x','tiktok','bluesky','linkedin','pinterest','youtube','telegram'];
 
 // ── Calendar ────────────────────────────────────────────────────
@@ -211,61 +222,230 @@ async function renderCalendar() {
   const events = await loadEvents();
   events.forEach(e => _calendar.addEvent(e));
   renderUpcoming(events.map(e => e.extendedProps));
+  renderRecent(events.map(e => e.extendedProps));
+  // Deep-link: /calendar?tab=failed or ?tab=recent
+  const urlTab = new URLSearchParams(location.search).get('tab');
+  if (urlTab === 'failed' || urlTab === 'recent') switchTab(urlTab);
+}
+
+let _allPosts = [];
+
+function switchTab(tab) {
+  ['upcoming','recent','failed'].forEach(t => {
+    document.getElementById(t + '-list').classList.toggle('d-none', t !== tab);
+  });
+  document.getElementById('tab-upcoming').className = `btn btn-sm ${tab==='upcoming' ? 'btn-primary' : 'btn-outline-secondary'}`;
+  document.getElementById('tab-recent').className   = `btn btn-sm ${tab==='recent'   ? 'btn-primary' : 'btn-outline-secondary'}`;
+  document.getElementById('tab-failed').className   = `btn btn-sm ${tab==='failed'   ? 'btn-danger'  : 'btn-outline-danger'}`;
 }
 
 function renderUpcoming(posts) {
+  _allPosts = posts;
   const container = document.getElementById('upcoming-list');
   const pending = posts.filter(p => p.status === 'pending')
     .sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
   if (!pending.length) {
     container.innerHTML = '<div class="text-muted small text-center py-4">No upcoming posts.</div>';
+  } else {
+    container.innerHTML = pending.map(p => schedItem(p)).join('');
+  }
+  renderRecent(posts);
+}
+
+function renderRecent(posts) {
+  const container = document.getElementById('recent-list');
+  const done = posts.filter(p => p.status !== 'pending')
+    .sort((a, b) => b.scheduled_at.localeCompare(a.scheduled_at))
+    .slice(0, 50);
+  // Failed tab
+  const failedContainer = document.getElementById('failed-list');
+  const failed = posts.filter(p => p.status === 'failed' || p.status === 'partial')
+    .sort((a, b) => b.scheduled_at.localeCompare(a.scheduled_at));
+  if (!failed.length) {
+    failedContainer.innerHTML = '<div class="text-muted small text-center py-4">No failed posts.</div>';
+  } else {
+    failedContainer.innerHTML = failed.map(p => {
+      const res = p.result || {};
+      const isTopErr = res.error && typeof res.error === 'string';
+      const dotColor = p.status === 'partial' ? '#d97706' : '#dc2626';
+      const badgeHtml = p.status === 'partial'
+        ? `<span class="badge ms-1" style="background:#d97706;font-size:.6rem;">partial</span>` : '';
+      const entries = isTopErr ? [] : Object.entries(res).filter(([, r]) => r && typeof r === 'object' && r.status !== 'posted');
+      const errSummary = isTopErr
+        ? `<div class="text-danger mt-1" style="font-size:.72rem;"><i class="bi bi-exclamation-circle-fill me-1"></i>${escHtml(res.error.slice(0,80))}</div>`
+        : entries.map(([pl, r]) => {
+            const icon = r.status === 'skipped' ? 'bi-dash-circle text-secondary' : 'bi-x-circle-fill text-danger';
+            const detail = (r.detail || r.status || '').split('{')[0].trim().slice(0, 60);
+            return `<div style="font-size:.72rem;"><i class="bi ${icon} me-1"></i><strong>${pl}</strong>: ${escHtml(detail)}</div>`;
+          }).join('');
+      return `
+      <div class="sched-item" style="cursor:pointer;" onclick='openEventModal(${JSON.stringify(p)})'>
+        <div class="sched-item-dot" style="background:${dotColor};"></div>
+        <div class="flex-grow-1">
+          <div class="sched-item-file">${escHtml(p.filename.replace(/\.[^.]+$/, ''))}${badgeHtml}</div>
+          <div class="sched-item-meta">${fmtDate(p.scheduled_at)}</div>
+          ${errSummary}
+        </div>
+      </div>`;
+    }).join('');
+  }
+  if (!done.length) {
+    container.innerHTML = '<div class="text-muted small text-center py-4">No history yet.</div>';
     return;
   }
-  container.innerHTML = pending.map(p => `
+  container.innerHTML = done.map(p => {
+    const res = p.result || {};
+    const isTopErr = res.error && typeof res.error === 'string';
+    const entries = isTopErr ? [] : Object.entries(res).filter(([, r]) => r && typeof r === 'object');
+    const resultLine = isTopErr
+      ? `<span class="text-danger" style="font-size:.72rem;" title="${escHtml(res.error)}"><i class="bi bi-exclamation-circle-fill"></i> ${escHtml(res.error.slice(0, 50))}${res.error.length > 50 ? '…' : ''}</span>`
+      : entries.length
+        ? entries.map(([pl, r]) => {
+            const ok = r.status === 'posted';
+            return `<span class="me-2" title="${escHtml(r.detail || r.status || '')}">`
+                 + `<i class="bi ${ok ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger'}" style="font-size:.7rem;"></i>`
+                 + ` <span style="font-size:.72rem;">${pl}</span></span>`;
+          }).join('')
+        : `<span class="text-muted" style="font-size:.72rem;">${p.status}</span>`;
+    return `
+    <div class="sched-item" style="cursor:pointer;" onclick='openEventModal(${JSON.stringify(p)})'>
+      <div class="sched-item-dot" style="background:${STATUS_COLOR[p.status] || '#6b7280'};"></div>
+      <div class="flex-grow-1">
+        <div class="sched-item-file">${escHtml(p.filename.replace(/\.[^.]+$/, ''))}</div>
+        <div class="sched-item-meta">${fmtDate(p.scheduled_at)}</div>
+        <div class="sched-item-platforms mt-1">${resultLine}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function schedItem(p) {
+  return `
     <div class="sched-item" style="cursor:pointer;" onclick='openEventModal(${JSON.stringify(p)})'>
       <div class="sched-item-dot" style="background:${STATUS_COLOR[p.status]};"></div>
       <div class="flex-grow-1">
-        <div class="sched-item-file">${escHtml(p.filename)}</div>
+        <div class="sched-item-file">${escHtml(p.filename.replace(/\.[^.]+$/, ''))}</div>
         <div class="sched-item-meta">${fmtDate(p.scheduled_at)}</div>
         <div class="sched-item-platforms">
           ${p.platforms.map(pl => `<span class="platform-chip">${pl}</span>`).join('')}
         </div>
       </div>
-    </div>
-  `).join('');
+    </div>`;
 }
 
 function openEventModal(post) {
   _activeEventId = post.id;
   const statusColor = STATUS_COLOR[post.status] || '#6b7280';
-  document.getElementById('eventModalTitle').textContent = post.filename;
+  document.getElementById('eventModalTitle').textContent = post.filename.replace(/\.[^.]+$/, '');
+  const res = post.result || {};
+  // Detect top-level error ({"error": "msg"}) vs per-platform ({"facebook": {"status":...}})
+  const isTopLevelError = res.error && typeof res.error === 'string';
+  const entries = isTopLevelError ? [] : Object.entries(res).filter(([, r]) => r && typeof r === 'object');
   document.getElementById('eventModalBody').innerHTML = `
-    <div class="mb-2 d-flex align-items-center gap-2">
+    <div class="mb-3 d-flex align-items-center gap-2">
       <span class="badge rounded-pill" style="background:${statusColor};font-size:.75rem;">${post.status}</span>
       <span class="text-muted small">${fmtDate(post.scheduled_at)}</span>
     </div>
+    ${isTopLevelError ? `
+    <div class="rounded-3 border border-danger-subtle bg-danger-subtle px-3 py-2 mb-2" style="font-size:.82rem;">
+      <i class="bi bi-exclamation-circle-fill text-danger me-2"></i>
+      <span class="text-danger-emphasis">${escHtml(res.error)}</span>
+    </div>` : ''}
+    ${entries.length ? `
+    <div class="mb-1"><span class="text-muted small fw-semibold">Per-platform results</span></div>
+    <div class="rounded-3 border overflow-hidden mb-2">
+      ${entries.map(([pl, r]) => {
+        const ok = r.status === 'posted';
+        const skipped = r.status === 'skipped';
+        const icon = ok ? 'bi-check-circle-fill text-success' : skipped ? 'bi-dash-circle text-secondary' : 'bi-x-circle-fill text-danger';
+        const badgeCls = ok ? 'bg-success-subtle text-success' : skipped ? 'bg-secondary-subtle text-secondary' : 'bg-danger-subtle text-danger';
+        const rawDetail = r.detail || r.post_id || '';
+        const cleanDetail = rawDetail.split('{')[0].trim();
+        const truncated = cleanDetail.length > 100 ? cleanDetail.slice(0, 100) + '…' : cleanDetail;
+        return `<div class="d-flex align-items-start gap-2 px-3 py-2 border-bottom" style="font-size:.82rem;">
+          <i class="bi ${icon} mt-1" style="flex-shrink:0;"></i>
+          <div class="flex-grow-1">
+            <span class="fw-semibold text-capitalize">${pl}</span>
+            ${truncated ? `<div class="text-muted" style="font-size:.75rem;" title="${escHtml(rawDetail)}">${escHtml(truncated)}</div>` : ''}
+          </div>
+          <span class="badge ${badgeCls}" style="font-size:.65rem;">${r.status}</span>
+        </div>`;
+      }).join('')}
+    </div>` : (!isTopLevelError ? `
     <div class="mb-2">
-      <span class="text-muted small fw-semibold">Platforms:</span>
+      <span class="text-muted small fw-semibold">Platforms scheduled:</span>
       <div class="d-flex gap-1 flex-wrap mt-1">
         ${post.platforms.map(pl => `<span class="platform-chip">${pl}</span>`).join('')}
       </div>
-    </div>
-    ${post.result ? `
-    <div class="mt-3">
-      <span class="text-muted small fw-semibold">Results:</span>
-      <div class="mt-1">
-        ${Object.entries(post.result).map(([p, r]) => `
-          <div class="d-flex align-items-center gap-2 small py-1">
-            <i class="bi ${r.status==='posted'?'bi-check-circle-fill text-success':'bi-x-circle-fill text-danger'}"></i>
-            <span class="fw-medium">${p}</span>
-            <span class="text-muted">${r.detail || r.status || ''}</span>
-          </div>`).join('')}
-      </div>
-    </div>` : ''}
+      ${post.status !== 'pending' ? `<div class="text-muted mt-2" style="font-size:.75rem;"><i class="bi bi-info-circle me-1"></i>No per-platform detail recorded for this post.</div>` : ''}
+    </div>` : '')}
   `;
   const deleteBtn = document.getElementById('eventModalDelete');
-  deleteBtn.style.display = post.status === 'pending' ? '' : 'none';
+  deleteBtn.classList.toggle('d-none', post.status !== 'pending');
+
+  // Retry block for failed / partial
+  const retrySection = document.getElementById('eventModalRetry');
+  if (post.status === 'failed' || post.status === 'partial') {
+    const failedPlats = entries.filter(([, r]) => r.status !== 'posted' && r.status !== 'skipped').map(([pl]) => pl);
+    const allPlats    = post.status === 'failed' && !entries.length ? (post.platforms || []) : failedPlats;
+    if (allPlats.length) {
+      const uid = 'cal-retry-' + post.id;
+      retrySection.innerHTML = `
+        <hr class="my-2">
+        <div class="fw-semibold small mb-2">Retry on:</div>
+        <div class="d-flex flex-wrap gap-2 mb-2">
+          ${allPlats.map(p => `
+            <label class="d-flex align-items-center gap-1" style="font-size:.8rem;cursor:pointer;">
+              <input type="checkbox" name="${uid}" value="${p}" checked> ${p}
+            </label>`).join('')}
+        </div>
+        <button class="btn btn-sm btn-outline-primary" onclick="calRetryPost('${post.id}','${uid}',this)">
+          <i class="bi bi-arrow-repeat me-1"></i>Retry selected
+        </button>
+        <div id="cal-retry-result-${post.id}" class="mt-2"></div>`;
+      retrySection.classList.remove('d-none');
+    } else {
+      retrySection.innerHTML = '';
+      retrySection.classList.add('d-none');
+    }
+  } else {
+    retrySection.innerHTML = '';
+    retrySection.classList.add('d-none');
+  }
+
   new bootstrap.Modal(document.getElementById('eventModal')).show();
+}
+
+async function calRetryPost(postId, uid, btn) {
+  const platforms = [...document.querySelectorAll(`input[name="${uid}"]:checked`)].map(c => c.value);
+  if (!platforms.length) { alert('Select at least one platform.'); return; }
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Posting…';
+  const res  = await fetch(`/api/schedule/${postId}/retry`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({platforms}),
+  });
+  const data = await res.json();
+  const result = data.result || {};
+  const out = document.getElementById(`cal-retry-result-${postId}`);
+
+  out.innerHTML = platforms.map(p => {
+    const r = result[p] || {};
+    const ok = r.status === 'posted' || r.ok || r.post_id || r.id;
+    return `<div style="font-size:.78rem;">${ok ? '✅' : '❌'} <b>${p}</b>: ${ok ? (r.post_id||'posted') : (r.detail||r.error||r.status||'?')}</div>`;
+  }).join('');
+
+  if (data.status === 'published') {
+    btn.remove();
+    const evt = _calendar?.getEventById(postId);
+    if (evt) { evt.setProp('color', '#16a34a'); evt.setExtendedProp('status', 'published'); }
+    const retrySection = document.getElementById('eventModalRetry');
+    const checksDiv = retrySection?.querySelector('.d-flex.flex-wrap');
+    if (checksDiv) checksDiv.remove();
+  } else {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i>Retry selected';
+  }
 }
 
 async function deleteEvent() {

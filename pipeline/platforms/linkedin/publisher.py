@@ -18,8 +18,8 @@ MAX_CAPTION = 3_000
 class LinkedInPublisher(BasePublisher):
     def __init__(self, credentials: dict = None, on_token_refresh=None):
         _c = credentials or {}
-        self.access_token     = _c.get("LINKEDIN_ACCESS_TOKEN")  or os.environ["LINKEDIN_ACCESS_TOKEN"]
-        self.person_urn       = _c.get("LINKEDIN_PERSON_URN")    or os.environ["LINKEDIN_PERSON_URN"]
+        self.access_token     = _c.get("LINKEDIN_ACCESS_TOKEN")  or os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
+        self.person_urn       = _c.get("LINKEDIN_PERSON_URN")    or os.environ.get("LINKEDIN_PERSON_URN", "")
         self.client_id        = _c.get("LINKEDIN_CLIENT_ID")     or os.environ.get("LINKEDIN_CLIENT_ID", "")
         self.client_secret    = _c.get("LINKEDIN_CLIENT_SECRET") or os.environ.get("LINKEDIN_CLIENT_SECRET", "")
         self.refresh_token    = _c.get("LINKEDIN_REFRESH_TOKEN") or os.environ.get("LINKEDIN_REFRESH_TOKEN", "")
@@ -75,10 +75,22 @@ class LinkedInPublisher(BasePublisher):
     # ── Public interface ─────────────────────────────────────────────────────
 
     def get_account_info(self) -> "dict | None":
-        r = self._get("https://api.linkedin.com/v2/userinfo", timeout=10)
+        if not self.access_token:
+            print("  LinkedIn: no access token")
+            return None
+        # Try userinfo (needs openid scope); fall back to token-presence check
+        r = requests.get("https://api.linkedin.com/v2/userinfo",
+                         headers={"Authorization": f"Bearer {self.access_token}"}, timeout=10)
         if r.ok:
             data = r.json()
-            return {"name": data.get("name", data.get("sub", "")), "id": self.person_urn}
+            return {"name": data.get("name", "LinkedIn"), "id": data.get("sub", self.person_urn)}
+        # With Community Management API scopes, userinfo returns 403 — token is still valid
+        if r.status_code in (401, 403):
+            r2 = requests.get("https://api.linkedin.com/v2/organizationAcls?q=roleAssignee&role=ADMINISTRATOR",
+                              headers={**HEADERS_BASE, "Authorization": f"Bearer {self.access_token}"}, timeout=10)
+            if r2.ok or r2.status_code == 403:
+                name = self.person_urn or "LinkedIn"
+                return {"name": name, "id": self.person_urn or "linkedin"}
         print(f"  LinkedIn get_account_info failed: {r.status_code} {r.text[:200]}")
         return None
 

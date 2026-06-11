@@ -12,6 +12,16 @@
   </button>
 </div>
 
+<!-- Render queue status -->
+<div id="queue-banner" class="d-none mb-4 p-3 rounded-3 border" style="background:#f8faff;border-color:#dde6ff!important;">
+  <div class="d-flex align-items-center gap-2 mb-2">
+    <div class="spinner-border spinner-border-sm text-primary" role="status" style="width:14px;height:14px;border-width:2px;"></div>
+    <span class="fw-semibold small">Rendering in progress</span>
+    <span id="queue-count" class="badge bg-primary rounded-pill ms-1" style="font-size:.7rem;"></span>
+  </div>
+  <div id="queue-items" class="d-flex flex-column gap-1"></div>
+</div>
+
 <div id="review-empty" class="d-none text-center py-5 text-muted">
   <i class="bi bi-check2-circle" style="font-size:3rem;opacity:.3;"></i>
   <div class="mt-3 fw-semibold">Nothing to review</div>
@@ -76,21 +86,34 @@
 let _rejectJobId = null;
 
 async function loadJobs() {
-  const list = document.getElementById('review-list');
+  const list  = document.getElementById('review-list');
   const empty = document.getElementById('review-empty');
-  list.innerHTML = '<div class="text-muted small py-3 text-center">Loading…</div>';
-  empty.classList.add('d-none');
 
-  const r = await fetch('/api/renders/review');
+  const r    = await fetch('/api/renders/review');
   const jobs = await r.json();
 
-  list.innerHTML = '';
-  if (!jobs.length) {
-    empty.classList.remove('d-none');
+  // First load — show spinner then render
+  if (!list.children.length && !list.dataset.loaded) {
+    list.innerHTML = '<div class="text-muted small py-3 text-center">Loading…</div>';
+    list.dataset.loaded = '1';
+    await new Promise(r => setTimeout(r, 0)); // yield to paint
+    list.innerHTML = '';
+    if (!jobs.length) { empty.classList.remove('d-none'); return; }
+    jobs.forEach(job => renderJobCard(job, list));
     return;
   }
 
-  jobs.forEach(job => renderJobCard(job, list));
+  // Subsequent polls — diff only: add new, remove gone, leave existing untouched
+  const newIds = new Set(jobs.map(j => j.id));
+  // Remove cards no longer in the response
+  [...list.querySelectorAll('[id^="job-"]')].forEach(el => {
+    if (!newIds.has(el.id.replace('job-', ''))) el.remove();
+  });
+  // Add cards for new jobs
+  const existingIds = new Set([...list.querySelectorAll('[id^="job-"]')].map(el => el.id.replace('job-', '')));
+  jobs.forEach(job => { if (!existingIds.has(job.id)) renderJobCard(job, list); });
+
+  empty.classList.toggle('d-none', !!list.querySelector('[id^="job-"]'));
 }
 
 function renderJobCard(job, container) {
@@ -236,6 +259,35 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-loadJobs();
+async function loadQueue() {
+  const r = await fetch('/api/renders/queue');
+  const jobs = await r.json();
+  const banner = document.getElementById('queue-banner');
+  const items  = document.getElementById('queue-items');
+  const count  = document.getElementById('queue-count');
+  if (!jobs.length) {
+    banner.classList.add('d-none');
+    return;
+  }
+  banner.classList.remove('d-none');
+  count.textContent = jobs.length;
+  items.innerHTML = jobs.map(j => {
+    const icon = j.status === 'rendering'
+      ? '<i class="bi bi-camera-video-fill text-primary me-1"></i>'
+      : '<i class="bi bi-clock text-muted me-1"></i>';
+    const badge = j.status === 'rendering'
+      ? '<span class="badge text-bg-primary ms-2" style="font-size:.65rem;">Rendering</span>'
+      : '<span class="badge text-bg-secondary ms-2" style="font-size:.65rem;">Queued</span>';
+    return `<div class="small d-flex align-items-center">${icon}<span>${escHtml(j.script_file || j.id)}</span>${badge}</div>`;
+  }).join('');
+}
+
+function startPolling() {
+  loadQueue();
+  loadJobs();
+  setInterval(() => { loadQueue(); loadJobs(); }, 15000);
+}
+
+startPolling();
 </script>
 {% endblock %}
