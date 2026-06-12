@@ -130,8 +130,9 @@
       <img src="{{ url_for('serve_queue_media', filename=img.filename) }}"
            class="mini-thumb" alt="">
       {% endif %}
-      <span class="mini-title" title="{{ img.caption }}">
-        {{ img.caption if img.caption else 'Untitled' }}
+      <span class="mini-title" id="mtitle-{{ cid }}" title="{{ img.filename }}"
+            ondblclick="startRename('{{ cid }}','{{ img.filename }}',this)">
+        {{ img.filename | replace('.mp4','') | replace('.mov','') | replace('.jpg','') | replace('.jpeg','') | replace('.png','') | replace('.gif','') | replace('.webp','') | replace('_',' ') | replace('-',' ') }}
       </span>
       <div class="mini-platforms">
         {% for pid, pname, color, icon in PLATS[:4] %}
@@ -387,6 +388,9 @@ function renderHistCard(it, status) {
   const date = fmtDate(it.scheduled_at || it.created_at);
   const title = (it.filename||'').replace(/\.[^.]+$/, '').replace(/_/g,' ');
 
+  const retryBadge = (it.retry_count > 0)
+    ? `<span title="Auto-retried ${it.retry_count}×" style="font-size:.65rem;color:#f59e0b;background:#fffbeb;border:1px solid #fde68a;border-radius:4px;padding:1px 5px;">↺ ${it.retry_count}×</span>`
+    : '';
   const dismissBtn = status !== 'published'
     ? `<button onclick="dismissFailed('${it.id}',this)" title="Dismiss" style="font-size:.7rem;background:none;border:none;color:#cbd5e1;cursor:pointer;padding:0;line-height:1;" onmouseover="this.style.color='#94a3b8'" onmouseout="this.style.color='#cbd5e1'">✕</button>`
     : '';
@@ -398,7 +402,7 @@ function renderHistCard(it, status) {
          style="padding:12px 14px;border-bottom:1px solid #f1f5f9;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
         <span style="font-size:.72rem;color:#94a3b8;">${date}</span>
-        <div style="display:flex;align-items:center;gap:8px;" id="hist-badge-${it.id}">${statusBadge}${dismissBtn}</div>
+        <div style="display:flex;align-items:center;gap:8px;" id="hist-badge-${it.id}">${retryBadge}${statusBadge}${dismissBtn}</div>
       </div>
       <div style="font-size:.84rem;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px;" title="${it.filename||''}">${title}</div>
       <div id="hist-plats-${it.id}" style="display:flex;flex-wrap:wrap;gap:2px 0;margin-bottom:${status!=='published'?'8':'0'}px;">${platChips}</div>
@@ -740,6 +744,60 @@ async function uploadFiles(files) {
 document.getElementById('upload-input').addEventListener('change', e => {
   uploadFiles([...e.target.files]); e.target.value = '';
 });
+
+// ── Inline rename ───────────────────────────────────────────────
+function startRename(cid, filename, titleEl) {
+  if (titleEl.querySelector('input')) return; // already editing
+  const current = filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+  titleEl.innerHTML = `<input id="rename-input-${cid}" value="${current.replace(/"/g,'&quot;')}"
+    style="font-size:inherit;font-weight:inherit;background:transparent;border:none;border-bottom:1px solid #6366f1;outline:none;width:90%;padding:0;color:inherit;"
+    onkeydown="if(event.key==='Enter')commitRename('${cid}','${filename}',this);if(event.key==='Escape')cancelRename('${cid}','${filename}',this);"
+    onblur="commitRename('${cid}','${filename}',this)" />`;
+  const inp = titleEl.querySelector('input');
+  inp.select();
+  inp.focus();
+}
+
+async function commitRename(cid, filename, inp) {
+  const newStem = inp.value.trim();
+  if (!newStem || newStem === filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ')) {
+    cancelRename(cid, filename, inp);
+    return;
+  }
+  inp.disabled = true;
+  const res  = await fetch(`/api/queue/${encodeURIComponent(filename)}/rename`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ new_stem: newStem }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    const newDisplay = data.filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+    const titleEl = document.getElementById('mtitle-' + cid);
+    if (titleEl) {
+      titleEl.innerHTML = newDisplay;
+      titleEl.title = data.filename;
+      titleEl.setAttribute('ondblclick', `startRename('${cid}','${data.filename}',this)`);
+    }
+    // Update the card's data-filename so delete/move still work
+    const card = document.getElementById(cid);
+    if (card) card.dataset.filename = data.filename;
+    // Update caption snip and expanded textarea stem display
+    const snip = card?.querySelector('.card-caption-snip');
+    if (snip && snip.textContent === filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ')) {
+      snip.textContent = newDisplay;
+    }
+  } else {
+    cancelRename(cid, filename, inp);
+  }
+}
+
+function cancelRename(cid, filename, inp) {
+  const titleEl = document.getElementById('mtitle-' + cid);
+  if (titleEl) {
+    titleEl.innerHTML = filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+  }
+}
 
 // Drag & drop
 let dc = 0;

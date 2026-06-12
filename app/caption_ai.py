@@ -25,6 +25,57 @@ def _get_anthropic_key():
     return _anthropic_key
 
 
+def generate_filename(image_path: Path, timeout: int = 10) -> str:
+    """
+    Use Claude Haiku vision to generate a 3-5 word kebab-case filename slug.
+    Returns e.g. 'dad-loses-toy-battle', or '' on failure.
+    """
+    import re
+    key = _get_anthropic_key()
+    if not key or not image_path or not image_path.exists():
+        return ""
+
+    ext = image_path.suffix.lower().lstrip(".")
+    media_type = {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "png": "image/png", "gif": "image/gif", "webp": "image/webp",
+    }.get(ext, "image/jpeg")
+
+    try:
+        image_data = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+        resp = requests.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 30,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image",
+                         "source": {"type": "base64", "media_type": media_type, "data": image_data}},
+                        {"type": "text",
+                         "text": ("3-5 words describing this image content as a filename. "
+                                  "Lowercase, hyphens only, no punctuation, no quotes. "
+                                  "Reply with just the slug, nothing else.")},
+                    ],
+                }],
+            },
+            timeout=timeout,
+        )
+        if not resp.ok:
+            return ""
+        raw = resp.json()["content"][0]["text"].strip().lower()
+        slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+        return slug[:60]
+    except Exception:
+        return ""
+
+
 def describe_image(image_path: Path) -> str:
     """
     Use Claude Haiku vision to describe what a meme image shows.

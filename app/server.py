@@ -715,6 +715,82 @@ def no_cache_html(response):
 
 _FORMAT_SUFFIXES = {"_vertical", "_square", "_horizontal", "_wide"}
 
+
+def _ai_name_file(file_path: Path) -> str:
+    """Extract a frame (for video) then call Haiku vision to get a short filename slug."""
+    import tempfile
+    from caption_ai import generate_filename
+    ext = file_path.suffix.lower()
+    if ext in ('.mp4', '.mov', '.webm', '.avi'):
+        frame_path = Path(tempfile.mktemp(suffix='.jpg'))
+        try:
+            subprocess.run(
+                ['ffmpeg', '-y', '-ss', '0.5', '-i', str(file_path),
+                 '-vframes', '1', '-q:v', '4', str(frame_path)],
+                capture_output=True, timeout=15,
+            )
+            if frame_path.exists() and frame_path.stat().st_size > 0:
+                return generate_filename(frame_path)
+        except Exception:
+            pass
+        finally:
+            frame_path.unlink(missing_ok=True)
+        return ''
+    return generate_filename(file_path)
+
+
+def _do_rename(old_path: Path, new_stem: str, queue_dir: Path, sched_store) -> str:
+    """
+    Rename a queue file and all format variants sharing the same base prefix.
+    Updates sched_store references. Returns the new primary filename.
+    """
+    import re
+    new_stem = re.sub(r"[^a-z0-9]+", "-", new_stem.lower()).strip("-")[:60]
+    if not new_stem or not old_path.exists():
+        return old_path.name
+
+    old_stem = old_path.stem
+    base_prefix = old_stem
+    for sfx in _FORMAT_SUFFIXES:
+        if old_stem.endswith(sfx):
+            base_prefix = old_stem[: -len(sfx)]
+            break
+
+    # Collect this file + any format variants with the same base prefix
+    candidates = []
+    for f in queue_dir.iterdir():
+        if not f.is_file():
+            continue
+        fstem = f.stem
+        if fstem == base_prefix:
+            candidates.append((f, ""))
+        else:
+            for sfx in _FORMAT_SUFFIXES:
+                if fstem == base_prefix + sfx:
+                    candidates.append((f, sfx))
+                    break
+    if not candidates:
+        candidates = [(old_path, "")]
+
+    rename_map: dict[str, str] = {}
+    for f, sfx in candidates:
+        new_name = new_stem + sfx + f.suffix
+        dest = queue_dir / new_name
+        counter = 1
+        while dest.exists() and dest != f:
+            new_name = f"{new_stem + sfx}_{counter}{f.suffix}"
+            dest = queue_dir / new_name
+            counter += 1
+        rename_map[f.name] = new_name
+        if f != dest:
+            f.rename(dest)
+
+    for old_fn, new_fn in rename_map.items():
+        sched_store.rename_file(old_fn, new_fn)
+
+    return rename_map.get(old_path.name, old_path.name)
+
+
 def _list_dir(folder, reverse=False):
     if not folder.exists():
         return []
@@ -1073,9 +1149,10 @@ def api_scheduled_failed():
                 "id":           it["id"],
                 "filename":     it["filename"],
                 "platforms":    it["platforms"],
-                "scheduled_at": it["scheduled_at"],
+                "scheduled_at": it.get("original_at") or it["scheduled_at"],
                 "status":       it["status"],
                 "result":       result,
+                "retry_count":  it.get("retry_count", 0),
             })
         return jsonify(out)
     except Exception as e:
@@ -1129,6 +1206,20 @@ def api_posted_clear_all():
     return jsonify({"ok": True, "deleted": count})
 
 
+@app.route("/api/queue/<path:filename>/rename", methods=["POST"])
+@login_required
+def api_queue_rename(filename):
+    body = request.get_json(silent=True) or {}
+    new_stem = (body.get("new_stem") or "").strip()
+    if not new_stem:
+        return jsonify({"error": "new_stem required"}), 400
+    old_path = _get_queue_dir() / filename
+    if not old_path.exists():
+        return jsonify({"error": "File not found"}), 404
+    new_name = _do_rename(old_path, new_stem, _get_queue_dir(), _get_sched_store())
+    return jsonify({"ok": True, "filename": new_name})
+
+
 @app.route("/api/queue/<path:filename>/move-to-posted", methods=["POST"])
 @login_required
 def api_move_to_posted(filename):
@@ -1173,6 +1264,14 @@ def api_queue_upload():
             dest = _get_queue_dir() / f"{stem}_{counter}{suffix}"
             counter += 1
         f.save(dest)
+        # AI auto-name: generate a short descriptive slug from the file content
+        try:
+            slug = _ai_name_file(dest)
+            if slug:
+                new_name = _do_rename(dest, slug, _get_queue_dir(), _get_sched_store())
+                dest = _get_queue_dir() / new_name
+        except Exception:
+            pass
         results.append({"ok": True, "filename": dest.name})
 
     if not results:

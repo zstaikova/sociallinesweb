@@ -39,13 +39,18 @@ class ScheduleStore:
                     status        TEXT NOT NULL DEFAULT 'pending',
                     result        TEXT,
                     created_at    TEXT NOT NULL,
-                    format_map    TEXT
+                    format_map    TEXT,
+                    retry_count   INT NOT NULL DEFAULT 0,
+                    original_at   TEXT
                 )
             """)
-            # Migrate existing tables that lack format_map
             cols = [r[1] for r in conn.execute("PRAGMA table_info(scheduled_posts)").fetchall()]
             if "format_map" not in cols:
                 conn.execute("ALTER TABLE scheduled_posts ADD COLUMN format_map TEXT")
+            if "retry_count" not in cols:
+                conn.execute("ALTER TABLE scheduled_posts ADD COLUMN retry_count INT NOT NULL DEFAULT 0")
+            if "original_at" not in cols:
+                conn.execute("ALTER TABLE scheduled_posts ADD COLUMN original_at TEXT")
 
     def _parse(self, row) -> dict:
         d = dict(row)
@@ -53,6 +58,7 @@ class ScheduleStore:
         d["platforms"]     = json.loads(d["platforms"])
         d["platform_opts"] = json.loads(d["platform_opts"])
         d["format_map"]    = json.loads(d["format_map"]) if d.get("format_map") else {}
+        d["retry_count"]   = d.get("retry_count") or 0
         if d["result"]:
             d["result"] = json.loads(d["result"])
         return d
@@ -73,12 +79,31 @@ class ScheduleStore:
         scheduled_at = datetime.fromisoformat(scheduled_at).isoformat(timespec="seconds")
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO scheduled_posts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO scheduled_posts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (post_id, filename, json.dumps(captions), json.dumps(platforms),
                  json.dumps(platform_options), scheduled_at, "pending", None, now,
-                 json.dumps(format_map) if format_map else None)
+                 json.dumps(format_map) if format_map else None, 0, None)
             )
         return post_id
+
+    def reschedule_for_retry(self, post_id: str, retry_at: datetime,
+                              retry_count: int, platforms: list,
+                              partial_result: dict):
+        """Re-queue a failed post for automatic retry on specific platforms."""
+        with self._conn() as conn:
+            # Preserve original_at on first retry
+            row = conn.execute("SELECT original_at, scheduled_at FROM scheduled_posts WHERE id=?",
+                               (post_id,)).fetchone()
+            original_at = (row["original_at"] or row["scheduled_at"]) if row else None
+            conn.execute(
+                """UPDATE scheduled_posts
+                   SET status='pending', scheduled_at=?, retry_count=?,
+                       platforms=?, result=?, original_at=?
+                   WHERE id=?""",
+                (retry_at.isoformat(timespec="seconds"), retry_count,
+                 json.dumps(platforms), json.dumps(partial_result),
+                 original_at, post_id)
+            )
 
     def list_all(self, status: str = None) -> list:
         with self._conn() as conn:
@@ -123,6 +148,22 @@ class ScheduleStore:
             ).fetchone()
         return self._parse(row) if row else None
 
+    def rename_file(self, old_fn: str, new_fn: str):
+        """Update pending scheduled posts that reference old_fn in filename or format_map."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, filename, format_map FROM scheduled_posts WHERE status='pending'"
+            ).fetchall()
+            for row in rows:
+                fm = json.loads(row["format_map"]) if row["format_map"] else {}
+                new_fm = {k: (new_fn if v == old_fn else v) for k, v in fm.items()}
+                new_filename = new_fn if row["filename"] == old_fn else row["filename"]
+                if new_filename != row["filename"] or new_fm != fm:
+                    conn.execute(
+                        "UPDATE scheduled_posts SET filename=?, format_map=? WHERE id=?",
+                        (new_filename, json.dumps(new_fm), row["id"])
+                    )
+
     def delete(self, post_id: str):
         with self._conn() as conn:
             conn.execute("DELETE FROM scheduled_posts WHERE id=?", (post_id,))
@@ -137,6 +178,42 @@ class ScheduleStore:
         raw["failed"] = raw.get("failed", 0) + raw.get("partial", 0)
         raw.pop("dismissed", None)
         return raw
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _is_retriable(detail: str) -> bool:
+    """True for transient errors that are worth auto-retrying."""
+    if not detail:
+        return False
+    d = str(detail)
+    # Facebook/Instagram intermittent OAuthException 190 (page-level API instability)
+    if '"code":190' in d or ("OAuthException" in d and "190" in d):
+        return True
+    # HTTP server errors
+    if any(code in d for code in ['"500"', '"502"', '"503"', '"504"', ':500', ':502', ':503', ':504']):
+        return True
+    # Network / timeout
+    if any(w in d.lower() for w in ['timeout', 'connection error', 'temporarily unavailable']):
+        return True
+    return False
+
+
+def _make_logger(brand_dir: Path):
+    """Return a log function that writes to brand posting.log and stdout."""
+    log_file = brand_dir / "posting.log"
+
+    def log(msg: str):
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{ts} {msg}"
+        print(f"  {line}")
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    return log
 
 
 # ── Background runner ────────────────────────────────────────────────────────
@@ -260,7 +337,38 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
             final_status = "published"
         else:
             final_status = "partial"
+
+        log = _make_logger(queue_dir.parent)
+        log(f"[post] {post['id']} {filename} → {final_status} "
+            f"(posted={posted} failed={failed} retry={post.get('retry_count',0)})")
+        for pname, r in results.items():
+            if isinstance(r, dict):
+                s = r.get("status", "?")
+                detail = r.get("post_id") or r.get("detail") or r.get("error") or ""
+                log(f"  {pname}: {s}" + (f" — {str(detail)[:120]}" if detail else ""))
+
+        # Auto-retry on transient failures
+        _MAX_AUTO_RETRIES = 3
+        _RETRY_HOURS      = 1
+        retry_count = post.get("retry_count", 0)
+        if final_status in ("failed", "partial") and retry_count < _MAX_AUTO_RETRIES:
+            failed_platforms = [
+                p for p, r in results.items()
+                if isinstance(r, dict) and r.get("status") in ("failed", "error")
+                and _is_retriable(r.get("detail", "") or r.get("error", ""))
+            ]
+            if failed_platforms:
+                from datetime import timedelta
+                retry_at = datetime.now() + timedelta(hours=_RETRY_HOURS)
+                store.reschedule_for_retry(post["id"], retry_at,
+                                           retry_count + 1, failed_platforms, results)
+                log(f"  ↺ retry {retry_count+1}/{_MAX_AUTO_RETRIES} scheduled for "
+                    f"{retry_at.strftime('%Y-%m-%d %H:%M')} — platforms: {', '.join(failed_platforms)}")
+                return  # don't mark failed yet
+
         store.update_status(post["id"], final_status, results)
+        if final_status in ("failed", "partial") and retry_count >= _MAX_AUTO_RETRIES:
+            log(f"  ✗ gave up after {retry_count} auto-retries")
 
         # Move files to posted folder on full success
         if final_status == "published":
