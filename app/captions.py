@@ -141,8 +141,11 @@ No preamble. No explanation. JSON only."""
                     raw = raw[4:]
             return json.loads(raw.strip())
     except Exception:
+        fallback = f"Follow {brand_name} for daily tips on AI and learning for kids."
+        if brand_website:
+            fallback += f" {brand_website}"
         return {
-            "caption":  script[:rules["max_chars"]] + (f"\n\n{brand_website}" if brand_website else ""),
+            "caption":  fallback,
             "hashtags": [],
         }
 

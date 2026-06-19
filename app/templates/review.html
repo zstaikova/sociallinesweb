@@ -250,9 +250,12 @@ async function confirmReject() {
 }
 
 function _pname(p) {
-  return {tiktok:'TikTok',instagram_reel:'Instagram',youtube_short:'YouTube',
-          facebook:'Facebook',x:'X',bluesky:'Bluesky',substack:'Substack',
-          telegram:'Telegram'}[p] || p;
+  return {
+    tiktok:'TikTok', instagram_reel:'Reels', instagram_post:'Instagram',
+    youtube_short:'YouTube', facebook:'Facebook', linkedin:'LinkedIn',
+    twitter:'Twitter', x:'X', bluesky:'Bluesky', substack:'Substack',
+    telegram:'Telegram'
+  }[p] || p;
 }
 
 function escHtml(s) {

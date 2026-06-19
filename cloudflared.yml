@@ -2,6 +2,10 @@ tunnel: 90345bfb-dc29-4892-9a92-3a071fef5b61
 credentials-file: C:\Users\z\.cloudflared\90345bfb-dc29-4892-9a92-3a071fef5b61.json
 
 ingress:
+  - hostname: app.cognifylearn.com
+    service: http://localhost:5000
   - hostname: app.socialline.space
+    service: http://localhost:5000
+  - hostname: socialline.space
     service: http://localhost:5000
   - service: http_status:404

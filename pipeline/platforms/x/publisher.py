@@ -83,9 +83,15 @@ class XPublisher(BasePublisher):
                     or (status is not None and status in _RETRY_STATUSES)
                 )
 
-                print(f"  X publish exception (attempt {attempt}/{_MAX_RETRIES}): {type(e).__name__}: {e}")
+                body = ""
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        body = e.response.text[:300]
+                    except Exception:
+                        pass
+                print(f"  X publish exception (attempt {attempt}/{_MAX_RETRIES}): {type(e).__name__}: {e!r}")
                 if status:
-                    print(f"  X response status: {status}")
+                    print(f"  X response status: {status} body: {body}")
 
                 if is_transient and attempt < _MAX_RETRIES:
                     print(f"  Transient error — retrying in {_RETRY_DELAY}s…")
@@ -94,6 +100,7 @@ class XPublisher(BasePublisher):
 
                 return False
 
+        print("  X: all attempts exhausted")
         return False
 
     def _build_text(self, item: ContentItem) -> str:

@@ -3,15 +3,34 @@ Scheduled post store (SQLite) + background dispatch runner.
 All times are local-time ISO strings (no timezone), matching
 what <input type="datetime-local"> produces.
 """
+import builtins
 import copy
-import io
 import json
+import logging
 import sqlite3
+import sys
 import threading
 import uuid
-import contextlib
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger("socialline")
+
+# ── Thread-local stdout capture ───────────────────────────────────────────────
+# contextlib.redirect_stdout patches the global sys.stdout and is not reliable
+# in background threads. Instead we patch builtins.print once and use a
+# thread-local list to accumulate output per publish call.
+
+_capture = threading.local()
+_original_print = builtins.print
+
+def _capturing_print(*args, sep=" ", end="\n", file=None, flush=False):
+    lines = getattr(_capture, "lines", None)
+    if lines is not None and file is None:
+        lines.append(sep.join(str(a) for a in args))
+    _original_print(*args, sep=sep, end=end, file=file, flush=flush)
+
+builtins.print = _capturing_print
 
 
 class ScheduleStore:
@@ -267,6 +286,25 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
 
         # Pre-flight: record which platforms have no credentials so the result is explicit
         no_creds = [p for p in platforms if not acct_store.get_credentials(p)]
+
+        # Pre-flight token health check for Facebook/Instagram
+        import requests as _req
+        for _plat in ("facebook", "instagram"):
+            if _plat not in platforms:
+                continue
+            _creds = acct_store.get_credentials(_plat)
+            if not _creds:
+                continue
+            _tok = _creds.get("FACEBOOK_PAGE_ACCESS_TOKEN") or _creds.get("INSTAGRAM_ACCESS_TOKEN", "")
+            _pid = _creds.get("FACEBOOK_PAGE_ID") or _creds.get("INSTAGRAM_ACCOUNT_ID", "")
+            if _tok and _pid:
+                _r = _req.get(f"https://graph.facebook.com/v19.0/{_pid}",
+                              params={"fields": "id", "access_token": _tok}, timeout=8)
+                if not _r.ok:
+                    _err = _r.json().get("error", {})
+                    logger.warning("PRE-FLIGHT %s token invalid (code %s): %s",
+                                   _plat, _err.get("code"), _err.get("message", _r.text[:200]))
+
         pipeline = create_pipeline(platforms=platforms, store=content_store,
                                    account_store=acct_store)
 
@@ -313,10 +351,12 @@ def _publish_scheduled(store: ScheduleStore, post: dict, queue_dir: Path, root: 
                 for transformer in platform_config.transformers:
                     platform_item = transformer.transform(platform_item)
 
-                captured = io.StringIO()
-                with contextlib.redirect_stdout(captured):
+                _capture.lines = []
+                try:
                     success = platform_config.publisher.publish(platform_item)
-                output = captured.getvalue().strip()
+                finally:
+                    output = "\n".join(_capture.lines).strip()
+                    _capture.lines = None
 
                 if success:
                     post_id = (platform_item.metadata.get(f"{pname}_post_id")

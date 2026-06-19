@@ -12,6 +12,12 @@ Connect Socialline to an X account for posting tweets with images.
 
 ---
 
+## Developer Account
+
+> **App in use:** `SociallineS` (App ID: `2051120335244709888`) owned by **@SociallineSpace** — log in to [developer.x.com](https://developer.x.com) as @SociallineSpace to regenerate tokens or change permissions. A second X developer app also exists — use `SociallineS` specifically.
+>
+> **Posting account:** @SociallineSpace. When connecting via the Socialline setup page, make sure the browser is logged into @SociallineSpace before clicking Connect.
+
 ## Create an X Developer App
 
 1. Go to https://developer.x.com → **Developer Portal** → apply for a developer account if needed

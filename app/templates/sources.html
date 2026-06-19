@@ -100,6 +100,14 @@
   }
   .btn-pull:hover { background: #e0e7ff; }
   .btn-pull:disabled { opacity: .5; cursor: default; }
+  .btn-render {
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border-radius: 7px; font-size: .78rem; font-weight: 600;
+    background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0;
+    cursor: pointer; transition: background .15s;
+  }
+  .btn-render:hover { background: #dcfce7; }
+  .btn-render:disabled { opacity: .5; cursor: default; }
 </style>
 
 <script>
@@ -349,6 +357,25 @@ async function toggleSource(id, enabled) {
   loadSources();
 }
 
+async function renderArticle(id, btnEl) {
+  btnEl.disabled = true;
+  btnEl.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Generating…';
+  try {
+    const r = await fetch(`/api/sources/${id}/render`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      showToast(`Script generated — job ${d.job_id} queued for render`, '#16a34a');
+    } else {
+      showToast(`Error: ${d.error}`, '#dc2626');
+    }
+  } catch (e) {
+    showToast('Render request failed: ' + e, '#dc2626');
+  } finally {
+    btnEl.disabled = false;
+    btnEl.innerHTML = '<i class="bi bi-film me-1"></i>Render';
+  }
+}
+
 async function pullNow(id, btnEl) {
   btnEl.disabled = true;
   btnEl.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
@@ -405,6 +432,11 @@ async function loadSources() {
                 onclick="pullNow('${s.id}', this)">
           <i class="bi bi-arrow-down-circle me-1"></i>Pull now
         </button>
+        ${s.type === 'article' ? `
+        <button class="btn-render" id="render-btn-${s.id}"
+                onclick="renderArticle('${s.id}', this)">
+          <i class="bi bi-film me-1"></i>Render
+        </button>` : ''}
         <button class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:.75rem;"
                 onclick='showAddPanel(${JSON.stringify(s)})' title="Edit">
           <i class="bi bi-pencil"></i>

@@ -35,6 +35,7 @@ if not os.environ.get("ACCOUNT_MASTER_KEY"):
     except Exception:
         pass
 
+import base64
 import time
 import hmac
 import hashlib
@@ -800,6 +801,20 @@ def _list_dir(folder, reverse=False):
         reverse=reverse,
     )
 
+    def _sidecar_caption(stem: str) -> str:
+        sc = folder / f"{stem}.caption.txt"
+        try:
+            if sc.exists():
+                return sc.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _make_title(caption: str, fallback: str) -> str:
+        if caption:
+            return caption.split("\n")[0][:80]
+        return fallback
+
     # Group render format variants (abc_vertical, abc_square, abc_horizontal) into one entry
     groups: dict[str, dict] = {}
     singles = []
@@ -814,21 +829,33 @@ def _list_dir(folder, reverse=False):
         if matched:
             prefix, fmt = matched
             if prefix not in groups:
+                cap = _sidecar_caption(stem)
+                fallback = prefix.replace("_", " ").replace("-", " ")
                 groups[prefix] = {
                     "filename": f.name,  # primary (first seen)
-                    "caption": prefix.replace("_", " ").replace("-", " "),
-                    "mtime": int(f.stat().st_mtime * 1000),
+                    "caption": cap or fallback,
+                    "title":   _make_title(cap, fallback),
+                    "mtime":   int(f.stat().st_mtime * 1000),
                     "format_map": {},
                 }
+            elif not groups[prefix].get("caption") or groups[prefix]["caption"] == groups[prefix].get("title", ""):
+                # Try upgrading caption from a later format variant's sidecar
+                cap = _sidecar_caption(stem)
+                if cap:
+                    groups[prefix]["caption"] = cap
+                    groups[prefix]["title"] = _make_title(cap, prefix.replace("_", " ").replace("-", " "))
             groups[prefix]["format_map"][fmt] = f.name
             # Prefer vertical as primary
             if fmt == "vertical":
                 groups[prefix]["filename"] = f.name
         else:
+            cap = _sidecar_caption(stem)
+            fallback = stem.replace("_", " ").replace("-", " ")
             singles.append({
                 "filename": f.name,
-                "caption": stem.replace("_", " ").replace("-", " "),
-                "mtime": int(f.stat().st_mtime * 1000),
+                "caption":  cap or fallback,
+                "title":    _make_title(cap, fallback),
+                "mtime":    int(f.stat().st_mtime * 1000),
                 "format_map": {},
             })
 
@@ -843,6 +870,46 @@ def _list_dir(folder, reverse=False):
 @app.route("/data-deletion")
 def data_deletion():
     return render_template("data_deletion.html")
+
+
+@app.route("/facebook/data-deletion", methods=["GET", "POST"])
+def facebook_data_deletion_callback():
+    if request.method == "GET":
+        return redirect("/data-deletion")
+
+    signed_request = request.form.get("signed_request", "")
+    if not signed_request:
+        return jsonify({"error": "Missing signed_request"}), 400
+
+    try:
+        encoded_sig, payload = signed_request.split(".", 1)
+    except ValueError:
+        return jsonify({"error": "Invalid signed_request format"}), 400
+
+    def _b64url_decode(s: str) -> bytes:
+        s += "=" * (-len(s) % 4)
+        return base64.urlsafe_b64decode(s)
+
+    app_secret = os.environ.get("FACEBOOK_APP_SECRET") or os.environ.get("META_APP_SECRET", "")
+    if not app_secret:
+        return jsonify({"error": "App not configured"}), 500
+
+    expected_sig = hmac.new(
+        app_secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+
+    if not hmac.compare_digest(_b64url_decode(encoded_sig), expected_sig):
+        return jsonify({"error": "Invalid signature"}), 403
+
+    confirmation_code = secrets.token_hex(16)
+    base_url = os.environ.get("SOCIALLINE_BASE_URL", "https://app.socialline.space")
+
+    return jsonify({
+        "url": f"{base_url}/data-deletion?code={confirmation_code}",
+        "confirmation_code": confirmation_code,
+    })
 
 
 @app.route("/privacy")
@@ -1551,10 +1618,15 @@ def api_setup_save_keys():
 def _oauth_callback_url(force_127: bool = False) -> str:
     """Returns the correct callback URL depending on environment.
     Always uses localhost when accessed via Cloudflare tunnel or any proxy,
-    since OAuth redirect must resolve in the user's local browser."""
+    since OAuth redirect must resolve in the user's local browser.
+    Set SOCIALLINE_BASE_URL=https://... in .env to use an HTTPS public URL instead
+    (required when Meta app has HTTPS enforcement enabled)."""
+    base_url = os.getenv("SOCIALLINE_BASE_URL", "").rstrip("/")
+    if base_url:
+        return f"{base_url}/callback"
     host = request.host
     # If accessed via a public domain (Cloudflare tunnel, etc.), force localhost
-    # so the OAuth redirect goes to the local server, not the suspended domain.
+    # so the OAuth redirect goes to the local server, not the public domain.
     if not (host.startswith("localhost") or host.startswith("127.")):
         host = "localhost:5000"
     if force_127:
@@ -1664,10 +1736,32 @@ def _youtube_exchange_and_save(code: str, flow: dict):
     refresh_token = tokens.get("refresh_token")
     if not refresh_token:
         raise ValueError("No refresh token — revoke at myaccount.google.com/permissions and retry")
+    # Fetch all channels owned by this Google account and save each as a separate entry,
+    # keyed by real channel ID so re-auth always updates the right record.
+    creds_base = {"YOUTUBE_ACCESS_TOKEN": access_token, "YOUTUBE_REFRESH_TOKEN": refresh_token,
+                  "YOUTUBE_CLIENT_ID": client_id, "YOUTUBE_CLIENT_SECRET": client_secret}
     acct = _acct_store_for(flow["brand_id"])
-    acct.add("youtube", "YouTube", "youtube",
-             {"YOUTUBE_ACCESS_TOKEN": access_token, "YOUTUBE_REFRESH_TOKEN": refresh_token,
-              "YOUTUBE_CLIENT_ID": client_id, "YOUTUBE_CLIENT_SECRET": client_secret})
+    try:
+        ch = _req.get(
+            "https://www.googleapis.com/youtube/v3/channels",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"part": "snippet", "mine": "true", "maxResults": "50"},
+            timeout=10,
+        )
+        channels = ch.json().get("items", []) if ch.ok else []
+    except Exception:
+        channels = []
+
+    if channels:
+        for channel in channels:
+            channel_name = channel["snippet"]["title"]
+            channel_id   = channel["id"]
+            acct.add("youtube", channel_name, channel_id, creds_base)
+            print(f"  [youtube] saved channel: {channel_name} ({channel_id})")
+    else:
+        # Fallback if channels API fails — save with generic name
+        acct.add("youtube", "YouTube", "youtube", creds_base)
+        print("  [youtube] channel list unavailable — saved as generic YouTube account")
 
 
 def _x_exchange_and_save(oauth_token: str, oauth_verifier: str, flow: dict):
@@ -1738,7 +1832,7 @@ def _facebook_exchange_and_save(code: str, flow: dict):
     app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
     redirect   = _oauth_callback_url() if request else "https://app.socialline.space/callback"
     # Short-lived token
-    resp = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+    resp = _req.get("https://graph.facebook.com/v19.0/oauth/access_token", params={
         "client_id": app_id, "redirect_uri": redirect,
         "client_secret": app_secret, "code": code,
     }, timeout=15)
@@ -1748,7 +1842,7 @@ def _facebook_exchange_and_save(code: str, flow: dict):
         raise ValueError(f"Facebook token exchange failed: {resp_json}")
     short_tok = resp_json["access_token"]
     # Exchange for long-lived token
-    resp2 = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+    resp2 = _req.get("https://graph.facebook.com/v19.0/oauth/access_token", params={
         "grant_type": "fb_exchange_token", "client_id": app_id,
         "client_secret": app_secret, "fb_exchange_token": short_tok,
     }, timeout=15)
@@ -1756,10 +1850,11 @@ def _facebook_exchange_and_save(code: str, flow: dict):
     resp2_json = resp2.json()
     if "access_token" not in resp2_json:
         raise ValueError(f"Facebook long-lived token exchange failed: {resp2_json}")
-    long_tok = resp2_json["access_token"]
-    print(f"  [facebook] long-lived token OK, fetching pages...")
+    long_tok   = resp2_json["access_token"]
+    expires_in = resp2_json.get("expires_in", "unknown")
+    print(f"  [facebook] long-lived token OK (expires_in={expires_in}s), fetching pages...")
     # Get pages
-    resp3 = _req.get("https://graph.facebook.com/v18.0/me/accounts",
+    resp3 = _req.get("https://graph.facebook.com/v19.0/me/accounts",
                      params={"access_token": long_tok, "fields": "id,name,access_token,tasks"},
                      timeout=15)
     print(f"  [facebook] /me/accounts status={resp3.status_code} body={resp3.text[:300]}")
@@ -1767,7 +1862,7 @@ def _facebook_exchange_and_save(code: str, flow: dict):
     pages = resp3.json().get("data", [])
     if not pages:
         # Fallback: pages owned by user's Business Portfolios
-        biz_resp = _req.get("https://graph.facebook.com/v18.0/me/businesses",
+        biz_resp = _req.get("https://graph.facebook.com/v19.0/me/businesses",
                             params={"access_token": long_tok, "fields": "id,name"},
                             timeout=15)
         print(f"  [facebook] /me/businesses status={biz_resp.status_code} body={biz_resp.text[:300]}")
@@ -1775,15 +1870,28 @@ def _facebook_exchange_and_save(code: str, flow: dict):
             for biz in biz_resp.json().get("data", []):
                 biz_id = biz["id"]
                 biz_name = biz.get("name", biz_id)
-                pages_resp = _req.get(f"https://graph.facebook.com/v18.0/{biz_id}/owned_pages",
+                pages_resp = _req.get(f"https://graph.facebook.com/v19.0/{biz_id}/owned_pages",
                                       params={"access_token": long_tok,
                                               "fields": "id,name,access_token"},
                                       timeout=15)
                 print(f"  [facebook] biz={biz_name} owned_pages status={pages_resp.status_code} body={pages_resp.text[:300]}")
                 if pages_resp.ok:
-                    pages.extend(pages_resp.json().get("data", []))
+                    for pg in pages_resp.json().get("data", []):
+                        if not pg.get("access_token"):
+                            # Business-managed pages don't include token — fetch it directly
+                            tok_r = _req.get(
+                                f"https://graph.facebook.com/v19.0/{pg['id']}",
+                                params={"fields": "access_token", "access_token": long_tok},
+                                timeout=10,
+                            )
+                            print(f"  [facebook] page token fetch {pg['id']} status={tok_r.status_code} body={tok_r.text[:200]}")
+                            pg["access_token"] = tok_r.json().get("access_token", "") if tok_r.ok else ""
+                        if pg.get("access_token"):
+                            pages.append(pg)
+                        else:
+                            print(f"  [facebook] skipping page {pg.get('name')} — no token obtainable")
     if not pages:
-        me_resp = _req.get("https://graph.facebook.com/v18.0/me",
+        me_resp = _req.get("https://graph.facebook.com/v19.0/me",
                            params={"access_token": long_tok, "fields": "id,name"}, timeout=10)
         me_info = me_resp.json() if me_resp.ok else {}
         raise ValueError(f"No Facebook Pages found for {me_info.get('name', 'this account')} ({me_info.get('id', '?')}). Grant page access and try again.")
@@ -1794,6 +1902,7 @@ def _facebook_exchange_and_save(code: str, flow: dict):
         page_name  = page.get("name", "Facebook Page")
         acct.add("facebook", page_name, page_id,
                  {"FACEBOOK_PAGE_ID": page_id, "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
+                  "FACEBOOK_USER_TOKEN": long_tok,
                   "FACEBOOK_APP_ID": app_id, "FACEBOOK_APP_SECRET": app_secret})
     # Store first page in flow for Instagram/Threads reuse
     flow["fb_page_id"]    = pages[0]["id"]
@@ -1814,37 +1923,46 @@ def _instagram_exchange_and_save(code: str, flow: dict):
     app_id     = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
     app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
     redirect   = _oauth_callback_url() if request else "https://app.socialline.space/callback"
-    resp = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+    resp = _req.get("https://graph.facebook.com/v19.0/oauth/access_token", params={
         "client_id": app_id, "redirect_uri": redirect,
         "client_secret": app_secret, "code": code,
     }, timeout=15)
     resp.raise_for_status()
-    short_tok = resp.json()["access_token"]
-    resp2 = _req.get("https://graph.facebook.com/v18.0/oauth/access_token", params={
+    resp_json = resp.json()
+    print(f"  [instagram] short-lived exchange: {resp_json}")
+    if "access_token" not in resp_json:
+        err = resp_json.get("error", resp_json)
+        raise ValueError(f"Instagram token exchange failed: {err.get('message', resp_json) if isinstance(err, dict) else err}")
+    short_tok = resp_json["access_token"]
+    resp2 = _req.get("https://graph.facebook.com/v19.0/oauth/access_token", params={
         "grant_type": "fb_exchange_token", "client_id": app_id,
         "client_secret": app_secret, "fb_exchange_token": short_tok,
     }, timeout=15)
     resp2.raise_for_status()
-    long_tok = resp2.json()["access_token"]
+    resp2_json = resp2.json()
+    if "access_token" not in resp2_json:
+        err = resp2_json.get("error", resp2_json)
+        raise ValueError(f"Instagram long-lived token exchange failed: {err.get('message', resp2_json) if isinstance(err, dict) else err}")
+    long_tok = resp2_json["access_token"]
     # Get pages the user manages
-    pages_resp = _req.get("https://graph.facebook.com/v18.0/me/accounts",
+    pages_resp = _req.get("https://graph.facebook.com/v19.0/me/accounts",
                           params={"access_token": long_tok, "fields": "id,name,access_token"},
                           timeout=15)
     pages_resp.raise_for_status()
     pages = pages_resp.json().get("data", [])
     if not pages:
         # Fallback: pages owned via Business Portfolio (same as Facebook flow)
-        biz_resp = _req.get("https://graph.facebook.com/v18.0/me/businesses",
+        biz_resp = _req.get("https://graph.facebook.com/v19.0/me/businesses",
                             params={"access_token": long_tok, "fields": "id,name"}, timeout=15)
         if biz_resp.ok:
             for biz in biz_resp.json().get("data", []):
-                owned = _req.get(f"https://graph.facebook.com/v18.0/{biz['id']}/owned_pages",
+                owned = _req.get(f"https://graph.facebook.com/v19.0/{biz['id']}/owned_pages",
                                  params={"access_token": long_tok, "fields": "id,name,access_token"},
                                  timeout=15)
                 if owned.ok:
                     pages.extend(owned.json().get("data", []))
     if not pages:
-        me = _req.get("https://graph.facebook.com/v18.0/me",
+        me = _req.get("https://graph.facebook.com/v19.0/me",
                       params={"access_token": long_tok, "fields": "id,name"}, timeout=10)
         me_info = me.json() if me.ok else {}
         raise ValueError(
@@ -1856,7 +1974,7 @@ def _instagram_exchange_and_save(code: str, flow: dict):
     for page in pages:
         pt = page.get("access_token", "")
         # Try Business and Creator account fields
-        fields_resp = _req.get(f"https://graph.facebook.com/v18.0/{page['id']}",
+        fields_resp = _req.get(f"https://graph.facebook.com/v19.0/{page['id']}",
                                params={"fields": "instagram_business_account,connected_instagram_account",
                                        "access_token": pt}, timeout=10)
         ig_data = None
@@ -1865,7 +1983,7 @@ def _instagram_exchange_and_save(code: str, flow: dict):
             ig_data = body.get("instagram_business_account") or body.get("connected_instagram_account")
         # Fallback: /instagram_accounts edge (Creator accounts not linked via Business Manager)
         if not ig_data:
-            edge_resp = _req.get(f"https://graph.facebook.com/v18.0/{page['id']}/instagram_accounts",
+            edge_resp = _req.get(f"https://graph.facebook.com/v19.0/{page['id']}/instagram_accounts",
                                  params={"access_token": pt}, timeout=10)
             if edge_resp.ok:
                 accts = edge_resp.json().get("data", [])
@@ -1890,6 +2008,9 @@ def _instagram_exchange_and_save(code: str, flow: dict):
         "INSTAGRAM_ACCESS_TOKEN":     page_token,
         "FACEBOOK_PAGE_ID":           page_id,
         "FACEBOOK_PAGE_ACCESS_TOKEN": page_token,
+        "FACEBOOK_USER_TOKEN":        long_tok,
+        "FACEBOOK_APP_ID":            os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or "",
+        "FACEBOOK_APP_SECRET":        os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or "",
     }
     acct.add("instagram", f"@{ig_username}" if ig_username else ig_id, ig_id, creds)
 
@@ -1985,6 +2106,47 @@ def _etsy_exchange_and_save(code: str, flow: dict):
     acct.add("etsy", "Etsy Shop", "etsy", creds)
 
 
+@app.route("/api/accounts/debug-token/<platform_id>", methods=["GET"])
+@login_required
+def api_debug_token(platform_id):
+    """Return live token debug info from Facebook's Graph API."""
+    import requests as _req
+    acct = _get_acct_store().get_active(platform_id)
+    if not acct or not acct.credentials:
+        return jsonify({"error": f"{platform_id} not connected"}), 404
+    creds = acct.credentials
+    if platform_id == "facebook":
+        tok = creds.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+        page_id = creds.get("FACEBOOK_PAGE_ID", "")
+    elif platform_id == "instagram":
+        tok = creds.get("INSTAGRAM_ACCESS_TOKEN", "")
+        page_id = creds.get("INSTAGRAM_ACCOUNT_ID", "")
+    else:
+        return jsonify({"error": "unsupported platform"}), 400
+    if not tok:
+        return jsonify({"error": "no token stored"}), 404
+    app_id     = os.getenv("META_APP_ID") or os.getenv("FACEBOOK_APP_ID") or ""
+    app_secret = os.getenv("META_APP_SECRET") or os.getenv("FACEBOOK_APP_SECRET") or ""
+    results = {}
+    # Token debug info
+    if app_id and app_secret:
+        dbg = _req.get("https://graph.facebook.com/debug_token", params={
+            "input_token": tok,
+            "access_token": f"{app_id}|{app_secret}",
+        }, timeout=10)
+        results["debug_token"] = dbg.json() if dbg.ok else {"error": dbg.text[:300]}
+    # Permissions check
+    perms = _req.get("https://graph.facebook.com/v19.0/me/permissions", params={"access_token": tok}, timeout=10)
+    results["permissions"] = perms.json() if perms.ok else {"error": perms.text[:300]}
+    # Page info
+    if page_id:
+        pg = _req.get(f"https://graph.facebook.com/v19.0/{page_id}", params={"fields": "name,id", "access_token": tok}, timeout=10)
+        results["page_info"] = pg.json() if pg.ok else {"error": pg.text[:300]}
+    results["token_preview"] = tok[:20] + "..."
+    results["page_id"] = page_id
+    return jsonify(results)
+
+
 @app.route("/api/accounts/launch-oauth/<platform_id>", methods=["POST"])
 @login_required
 @limiter.limit("20 per hour")
@@ -2005,8 +2167,9 @@ def api_setup_launch_oauth(platform_id):
             "client_id": app_id, "redirect_uri": redirect,
             "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,pages_manage_metadata,business_management",
             "response_type": "code", "state": state,
+            "auth_type": "rerequest",
         })
-        auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
+        auth_url = f"https://www.facebook.com/v19.0/dialog/oauth?{params}"
         _oauth_account_counts["facebook"] = len(_get_acct_store().list_all("facebook"))
         return jsonify({"ok": True, "auth_url": auth_url,
             "message": "Log in with Facebook and grant page access."})
@@ -2020,8 +2183,9 @@ def api_setup_launch_oauth(platform_id):
             "client_id": app_id, "redirect_uri": redirect,
             "scope": "pages_show_list,pages_manage_posts,pages_read_engagement,pages_manage_metadata,instagram_basic,instagram_content_publish,business_management",
             "response_type": "code", "state": state,
+            "auth_type": "rerequest",
         })
-        auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{params}"
+        auth_url = f"https://www.facebook.com/v19.0/dialog/oauth?{params}"
         _oauth_account_counts["instagram"] = len(_get_acct_store().list_all("instagram"))
         return jsonify({"ok": True, "auth_url": auth_url,
             "message": "Log in with Facebook and grant Instagram access."})
@@ -2210,7 +2374,7 @@ def api_setup_status(platform_id):
                         acct.add(platform_id, info["name"], info["id"], creds)
                         _oauth_account_counts.pop(platform_id, None)
             except Exception as _auto_err:
-                logger.warning(f"Auto-import failed for {platform_id}: {_auto_err}")
+                _elog.warning(f"Auto-import failed for {platform_id}: {_auto_err}")
 
         configured = new_account_saved or tokens_ready
 
@@ -2646,6 +2810,21 @@ def api_sources_pull(source_id):
         return jsonify({"ok": True, "added": len(added), "files": added})
     except Exception as e:
         _get_source_store().log_pull(source_id, 0, status="error", error=str(e))
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/sources/<source_id>/render", methods=["POST"])
+@not_reviewer
+def api_sources_render(source_id):
+    source = _get_source_store().get(source_id)
+    if not source:
+        return jsonify({"error": "Source not found"}), 404
+    if source["type"] != "article":
+        return jsonify({"error": "Only article sources can be rendered"}), 400
+    try:
+        job_id = _get_pull_engine().article_to_render(source)
+        return jsonify({"ok": True, "job_id": job_id})
+    except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 

@@ -197,13 +197,20 @@ let _activeEventId = null;
 const STATUS_COLOR = { pending: '#4361ee', published: '#16a34a', failed: '#dc2626', partial: '#d97706', cancelled: '#9ca3af' };
 const ALL_PLATFORMS = ['facebook','instagram','threads','x','tiktok','bluesky','linkedin','pinterest','youtube','telegram'];
 
+function postTitle(p) {
+  const caps = p.captions || {};
+  const cap = Object.values(caps).find(c => c && c.trim());
+  if (cap) return cap.split('\n')[0].slice(0, 80);
+  return (p.filename || '').replace(/\.[^.]+$/, '');
+}
+
 // ── Calendar ────────────────────────────────────────────────────
 async function loadEvents() {
   const r = await fetch('/api/schedule');
   const posts = await r.json();
   return posts.map(p => ({
     id:    p.id,
-    title: p.filename.replace(/\.[^.]+$/, ''),
+    title: postTitle(p),
     start: p.scheduled_at,
     color: STATUS_COLOR[p.status] || '#6b7280',
     extendedProps: p,
@@ -282,7 +289,7 @@ function renderRecent(posts) {
       <div class="sched-item" style="cursor:pointer;" onclick='openEventModal(${JSON.stringify(p)})'>
         <div class="sched-item-dot" style="background:${dotColor};"></div>
         <div class="flex-grow-1">
-          <div class="sched-item-file">${escHtml(p.filename.replace(/\.[^.]+$/, ''))}${badgeHtml}</div>
+          <div class="sched-item-file">${escHtml(postTitle(p))}${badgeHtml}</div>
           <div class="sched-item-meta">${fmtDate(p.scheduled_at)}</div>
           ${errSummary}
         </div>
@@ -311,7 +318,7 @@ function renderRecent(posts) {
     <div class="sched-item" style="cursor:pointer;" onclick='openEventModal(${JSON.stringify(p)})'>
       <div class="sched-item-dot" style="background:${STATUS_COLOR[p.status] || '#6b7280'};"></div>
       <div class="flex-grow-1">
-        <div class="sched-item-file">${escHtml(p.filename.replace(/\.[^.]+$/, ''))}</div>
+        <div class="sched-item-file">${escHtml(postTitle(p))}</div>
         <div class="sched-item-meta">${fmtDate(p.scheduled_at)}</div>
         <div class="sched-item-platforms mt-1">${resultLine}</div>
       </div>
@@ -324,7 +331,7 @@ function schedItem(p) {
     <div class="sched-item" style="cursor:pointer;" onclick='openEventModal(${JSON.stringify(p)})'>
       <div class="sched-item-dot" style="background:${STATUS_COLOR[p.status]};"></div>
       <div class="flex-grow-1">
-        <div class="sched-item-file">${escHtml(p.filename.replace(/\.[^.]+$/, ''))}</div>
+        <div class="sched-item-file">${escHtml(postTitle(p))}</div>
         <div class="sched-item-meta">${fmtDate(p.scheduled_at)}</div>
         <div class="sched-item-platforms">
           ${p.platforms.map(pl => `<span class="platform-chip">${pl}</span>`).join('')}
@@ -336,7 +343,7 @@ function schedItem(p) {
 function openEventModal(post) {
   _activeEventId = post.id;
   const statusColor = STATUS_COLOR[post.status] || '#6b7280';
-  document.getElementById('eventModalTitle').textContent = post.filename.replace(/\.[^.]+$/, '');
+  document.getElementById('eventModalTitle').textContent = postTitle(post);
   const res = post.result || {};
   // Detect top-level error ({"error": "msg"}) vs per-platform ({"facebook": {"status":...}})
   const isTopLevelError = res.error && typeof res.error === 'string';

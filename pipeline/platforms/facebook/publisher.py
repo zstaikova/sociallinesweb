@@ -31,10 +31,51 @@ def _compress_image(path: Path) -> tuple[bytes, str]:
 
 
 class FacebookPublisher(BasePublisher):
-    def __init__(self, credentials: dict = None):
+    def __init__(self, credentials: dict = None, on_token_refresh=None):
         _c = credentials or {}
-        self.page_id      = _c.get("FACEBOOK_PAGE_ID")           or os.environ.get("FACEBOOK_PAGE_ID", "")
-        self.access_token = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+        self.page_id          = _c.get("FACEBOOK_PAGE_ID")           or os.environ.get("FACEBOOK_PAGE_ID", "")
+        self.access_token     = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+        self.user_token       = _c.get("FACEBOOK_USER_TOKEN",        "")
+        self.app_id           = _c.get("FACEBOOK_APP_ID",            "")
+        self.app_secret       = _c.get("FACEBOOK_APP_SECRET",        "")
+        self.on_token_refresh = on_token_refresh
+
+    def _refresh(self) -> bool:
+        """Regenerate the page access token using the stored long-lived user token."""
+        if not self.user_token or not self.app_id or not self.page_id:
+            return False
+        try:
+            r = requests.get(
+                f"{GRAPH_URL}/me/accounts",
+                params={"access_token": self.user_token, "fields": "id,name,access_token"},
+                timeout=15,
+            )
+            if not r.ok:
+                print(f"  Facebook: page token refresh failed — /me/accounts {r.status_code} {r.text[:200]}")
+                return False
+            for page in r.json().get("data", []):
+                if page["id"] == self.page_id:
+                    new_token = page["access_token"]
+                    self.access_token = new_token
+                    if self.on_token_refresh:
+                        self.on_token_refresh(new_token)
+                    print(f"  Facebook: page token refreshed for page {self.page_id}")
+                    return True
+            print(f"  Facebook: page {self.page_id} not found in /me/accounts — user may have revoked access")
+        except Exception as e:
+            print(f"  Facebook: token refresh exception: {e}")
+        return False
+
+    def _post(self, url, **kwargs):
+        r = requests.post(url, **kwargs)
+        if r.status_code in (400, 401):
+            err_code = r.json().get("error", {}).get("code") if r.headers.get("content-type", "").startswith("application/json") else None
+            if r.status_code == 401 or err_code == 190:
+                if self._refresh():
+                    if "data" in kwargs and isinstance(kwargs["data"], dict):
+                        kwargs["data"]["access_token"] = self.access_token
+                    r = requests.post(url, **kwargs)
+        return r
 
     def get_account_info(self) -> "dict | None":
         resp = requests.get(
@@ -91,10 +132,15 @@ class FacebookPublisher(BasePublisher):
                     print(f"  Facebook video posted: {post_id}")
                     return True
                 err = resp.json().get("error", {}) if "application/json" in resp.headers.get("content-type", "") else {}
-                if err.get("code") in (1, 2) and attempt == 0:
-                    print(f"  Facebook: transient error — retrying in 5s")
-                    time.sleep(5)
-                    continue
+                if attempt == 0:
+                    if err.get("code") == 190:
+                        print(f"  Facebook: token expired (190) — refreshing and retrying")
+                        self._refresh()
+                        continue
+                    if err.get("code") in (1, 2):
+                        print(f"  Facebook: transient error — retrying in 5s")
+                        time.sleep(5)
+                        continue
                 print(f"  Facebook video error: {resp.status_code} {resp.text[:300]}")
                 return False
             except Exception as e:
@@ -135,10 +181,15 @@ class FacebookPublisher(BasePublisher):
                     return True
 
                 err = resp.json().get("error", {}) if "application/json" in resp.headers.get("content-type", "") else {}
-                if err.get("code") in (1, 2) and attempt == 0:
-                    print(f"  Facebook: transient error (code {err.get('code')}) — retrying in 5s")
-                    time.sleep(5)
-                    continue
+                if attempt == 0:
+                    if err.get("code") == 190:
+                        print(f"  Facebook: token expired (190) — refreshing and retrying")
+                        self._refresh()
+                        continue
+                    if err.get("code") in (1, 2):
+                        print(f"  Facebook: transient error (code {err.get('code')}) — retrying in 5s")
+                        time.sleep(5)
+                        continue
                 print(f"  Facebook API error: {resp.status_code} {resp.text}")
                 return False
             except Exception as e:

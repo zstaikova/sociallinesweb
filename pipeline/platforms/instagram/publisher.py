@@ -15,13 +15,16 @@ VIDEO_EXTS    = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
 
 class InstagramPublisher(BasePublisher):
-    def __init__(self, credentials: dict = None, on_token_refresh=None):
+    def __init__(self, credentials: dict = None, on_token_refresh=None,
+                 on_page_token_refresh=None):
         _c = credentials or {}
-        self.ig_account_id    = _c.get("INSTAGRAM_ACCOUNT_ID")      or os.environ.get("INSTAGRAM_ACCOUNT_ID", "")
-        self.access_token     = _c.get("INSTAGRAM_ACCESS_TOKEN")     or os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
-        self.page_id          = _c.get("FACEBOOK_PAGE_ID")           or os.environ.get("FACEBOOK_PAGE_ID", "")
-        self.fb_page_token    = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
-        self.on_token_refresh = on_token_refresh
+        self.ig_account_id        = _c.get("INSTAGRAM_ACCOUNT_ID")      or os.environ.get("INSTAGRAM_ACCOUNT_ID", "")
+        self.access_token         = _c.get("INSTAGRAM_ACCESS_TOKEN")     or os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")
+        self.page_id              = _c.get("FACEBOOK_PAGE_ID")           or os.environ.get("FACEBOOK_PAGE_ID", "")
+        self.fb_page_token        = _c.get("FACEBOOK_PAGE_ACCESS_TOKEN") or os.environ.get("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+        self.fb_user_token        = _c.get("FACEBOOK_USER_TOKEN", "")
+        self.on_token_refresh     = on_token_refresh
+        self.on_page_token_refresh = on_page_token_refresh
 
     # ── Token refresh ────────────────────────────────────────────────────────
 
@@ -43,6 +46,32 @@ class InstagramPublisher(BasePublisher):
             print(f"  Instagram: token refresh exception: {e}")
         return False
 
+    def _refresh_page_token(self) -> bool:
+        """Regenerate FACEBOOK_PAGE_ACCESS_TOKEN using the stored long-lived user token."""
+        if not self.fb_user_token or not self.page_id:
+            return False
+        try:
+            r = requests.get(
+                f"{FB_GRAPH}/me/accounts",
+                params={"access_token": self.fb_user_token, "fields": "id,name,access_token"},
+                timeout=15,
+            )
+            if not r.ok:
+                print(f"  Instagram: page token refresh failed {r.status_code} {r.text[:200]}")
+                return False
+            for page in r.json().get("data", []):
+                if page["id"] == self.page_id:
+                    new_token = page["access_token"]
+                    self.fb_page_token = new_token
+                    if self.on_page_token_refresh:
+                        self.on_page_token_refresh(new_token)
+                    print(f"  Instagram: FB page token refreshed for page {self.page_id}")
+                    return True
+            print(f"  Instagram: page {self.page_id} not found in /me/accounts")
+        except Exception as e:
+            print(f"  Instagram: page token refresh exception: {e}")
+        return False
+
     def _get(self, url, **kwargs):
         r = requests.get(url, **kwargs)
         if r.status_code == 401:
@@ -59,6 +88,18 @@ class InstagramPublisher(BasePublisher):
                 if "data" in kwargs and isinstance(kwargs["data"], dict):
                     kwargs["data"]["access_token"] = self.access_token
                 r = requests.post(url, **kwargs)
+        elif r.status_code == 400:
+            try:
+                err_code = r.json().get("error", {}).get("code")
+            except Exception:
+                err_code = None
+            if err_code == 190:
+                if self._refresh_page_token():
+                    if "data" in kwargs and isinstance(kwargs["data"], dict):
+                        d = kwargs["data"]
+                        if "access_token" in d:
+                            d["access_token"] = self.fb_page_token
+                    r = requests.post(url, **kwargs)
         return r
 
     # ── Public interface ─────────────────────────────────────────────────────
@@ -92,85 +133,129 @@ class InstagramPublisher(BasePublisher):
             return self._publish_reel(item)
         return self._publish_image(item)
 
-    # ── Video (Reels) — resumable upload ────────────────────────────────────
+    # ── Video (Reels) ─────────────────────────────────────────────────────────
 
     def _publish_reel(self, item: ContentItem) -> bool:
-        caption   = self._build_caption(item)
-        path      = item.media_path
-        file_size = path.stat().st_size
+        caption    = self._build_caption(item)
+        path       = item.media_path
+        upload_tok = self.fb_page_token or self.access_token
 
-        # Step 1: initialise resumable upload session
+        # Try binary resumable upload; fall back to URL-based if blocked.
+        result = self._try_resumable_upload(path, caption, upload_tok)
+        if result == "ok":
+            item.metadata["instagram_reel_method"] = "resumable"
+        elif result == "fallback":
+            print("  Instagram: binary upload blocked, staging via URL...")
+            video_url = self._stage_video_url(path)
+            if not video_url:
+                return False
+            result = self._publish_reel_from_url(video_url, caption, upload_tok)
+        if result not in ("ok", None):
+            pass
+        if result == "ok":
+            item.posted_at = datetime.utcnow()
+            return True
+        return result is True  # shouldn't reach here
+
+    def _try_resumable_upload(self, path: Path, caption: str, upload_tok: str) -> str:
+        """Returns 'ok' if published via resumable, 'fallback' if binary upload is blocked."""
+        file_size = path.stat().st_size
         resp = self._post(
             f"{FB_GRAPH}/{self.ig_account_id}/media",
-            data={
-                "media_type":  "REELS",
-                "upload_type": "resumable",
-                "caption":     caption,
-                "access_token": self.access_token,
-            },
+            data={"media_type": "REELS", "upload_type": "resumable",
+                  "caption": caption, "access_token": upload_tok},
             timeout=30,
         )
         if not resp.ok:
-            print(f"  Instagram: Reels init failed {resp.status_code} {resp.text[:300]}")
-            return False
-
-        data        = resp.json()
-        upload_url  = data.get("upload_url") or data.get("uri")
+            return "fallback"
+        data = resp.json()
+        upload_url   = data.get("uri") or data.get("upload_url")
         container_id = data.get("id")
         if not upload_url or not container_id:
-            print(f"  Instagram: missing upload_url or container id: {data}")
-            return False
-
-        # Step 2: upload video bytes
+            return "fallback"
         try:
             with open(path, "rb") as f:
-                upload_resp = requests.post(
+                ur = requests.post(
                     upload_url,
-                    headers={
-                        "Authorization":  f"OAuth {self.access_token}",
-                        "offset":         "0",
-                        "file_size":      str(file_size),
-                    },
-                    data=f,
-                    timeout=180,
+                    headers={"Authorization": f"OAuth {upload_tok}",
+                             "offset": "0", "file_size": str(file_size)},
+                    data=f, timeout=180,
                 )
-        except Exception as e:
-            print(f"  Instagram: video upload exception: {e}")
-            return False
-
-        if not upload_resp.ok:
-            print(f"  Instagram: video upload failed {upload_resp.status_code} {upload_resp.text[:300]}")
-            return False
-
-        # Step 3: wait for processing
-        print(f"  Instagram: video uploaded, waiting for processing...")
+        except Exception:
+            return "fallback"
+        if not ur.ok:
+            print(f"  Instagram: binary upload blocked ({ur.status_code}) — falling back to URL upload")
+            return "fallback"
+        # Binary upload succeeded — wait for processing and publish
+        print("  Instagram: video uploaded, waiting for processing...")
         for _ in range(15):
             time.sleep(5)
-            status_resp = requests.get(
-                f"{FB_GRAPH}/{container_id}",
-                params={"fields": "status_code,status", "access_token": self.access_token},
-                timeout=15,
-            )
-            if status_resp.ok:
-                status_code = status_resp.json().get("status_code")
-                if status_code == "FINISHED":
-                    break
-                if status_code == "ERROR":
-                    print(f"  Instagram: video processing error: {status_resp.json()}")
-                    return False
-                print(f"  Instagram: processing... ({status_code})")
-        else:
-            print("  Instagram: video processing timed out")
-            return False
+            sr = requests.get(f"{FB_GRAPH}/{container_id}",
+                              params={"fields": "status_code", "access_token": upload_tok},
+                              timeout=15)
+            sc = sr.json().get("status_code") if sr.ok else None
+            if sc == "FINISHED":
+                post_id = self._publish_container(container_id, upload_tok)
+                if post_id:
+                    print(f"  Instagram Reel posted: {post_id}")
+                    return "ok"
+                return "fallback"
+            if sc == "ERROR":
+                return "fallback"
+        return "fallback"
 
-        # Step 4: publish
-        post_id = self._publish_container(container_id)
+    def _publish_reel_from_url(self, video_url: str, caption: str, upload_tok: str) -> str:
+        """URL-based Reel publish. Returns 'ok' on success, None on failure."""
+        resp = self._post(
+            f"{FB_GRAPH}/{self.ig_account_id}/media",
+            data={"media_type": "REELS", "video_url": video_url,
+                  "caption": caption, "access_token": upload_tok},
+            timeout=30,
+        )
+        if not resp.ok:
+            print(f"  Instagram: URL container failed {resp.status_code} {resp.text[:300]}")
+            return None
+        container_id = resp.json().get("id")
+        print("  Instagram: waiting for Reel processing (URL upload)...")
+        for _ in range(20):
+            time.sleep(8)
+            sr = requests.get(f"{FB_GRAPH}/{container_id}",
+                              params={"fields": "status_code,status", "access_token": upload_tok},
+                              timeout=15)
+            if sr.ok:
+                sc = sr.json().get("status_code")
+                if sc == "FINISHED":
+                    break
+                if sc == "ERROR":
+                    print(f"  Instagram: processing error: {sr.json()}")
+                    return None
+                print(f"  Instagram: processing... ({sc})")
+        else:
+            print("  Instagram: processing timed out")
+            return None
+        post_id = self._publish_container(container_id, upload_tok)
         if post_id:
-            item.metadata["instagram_post_id"] = post_id
-            item.posted_at = datetime.utcnow()
             print(f"  Instagram Reel posted: {post_id}")
-            return True
-        return False
+            return "ok"
+        return None
+
+    def _stage_video_url(self, path: Path) -> "str | None":
+        """Upload video to catbox.moe (24 h) and return public URL for Instagram."""
+        try:
+            with open(path, "rb") as f:
+                r = requests.post(
+                    "https://litterbox.catbox.moe/resources/internals/api.php",
+                    data={"reqtype": "fileupload", "time": "24h"},
+                    files={"fileToUpload": (path.name, f, "video/mp4")},
+                    timeout=120,
+                )
+            if r.ok and r.text.startswith("http"):
+                print(f"  Instagram: video staged at {r.text.strip()}")
+                return r.text.strip()
+            print(f"  Instagram: video staging failed {r.status_code} {r.text[:200]}")
+        except Exception as e:
+            print(f"  Instagram: video staging exception: {e}")
+        return None
 
     # ── Image ────────────────────────────────────────────────────────────────
 
@@ -196,13 +281,24 @@ class InstagramPublisher(BasePublisher):
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _stage_image(self, media_path: Path) -> "str | None":
-        with open(media_path, "rb") as f:
-            resp = self._post(
-                f"{FB_GRAPH}/{self.page_id}/photos",
-                data={"published": "false", "access_token": self.fb_page_token},
-                files={"source": f},
-                timeout=30,
-            )
+        for attempt in range(2):
+            with open(media_path, "rb") as f:
+                resp = requests.post(
+                    f"{FB_GRAPH}/{self.page_id}/photos",
+                    data={"published": "false", "access_token": self.fb_page_token},
+                    files={"source": f},
+                    timeout=30,
+                )
+            if resp.ok:
+                break
+            err_code = resp.json().get("error", {}).get("code") if resp.headers.get("content-type", "").startswith("application/json") else None
+            if attempt == 0 and err_code == 190:
+                print(f"  Instagram: staging token expired (190) — refreshing and retrying")
+                if not self._refresh_page_token():
+                    break
+                continue
+            print(f"  Instagram: image staging failed {resp.status_code} {resp.text[:300]}")
+            return None
         if not resp.ok:
             print(f"  Instagram: image staging failed {resp.status_code} {resp.text[:300]}")
             return None
@@ -236,10 +332,11 @@ class InstagramPublisher(BasePublisher):
             return None
         return resp.json().get("id")
 
-    def _publish_container(self, container_id: str) -> "str | None":
+    def _publish_container(self, container_id: str, token: str = None) -> "str | None":
+        tok = token or self.access_token
         resp = self._post(
             f"{FB_GRAPH}/{self.ig_account_id}/media_publish",
-            data={"creation_id": container_id, "access_token": self.access_token},
+            data={"creation_id": container_id, "access_token": tok},
             timeout=30,
         )
         if not resp.ok:

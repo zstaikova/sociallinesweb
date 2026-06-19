@@ -344,6 +344,7 @@ Return the JSON array now:"""
                 f'npx remotion render {self.remotion_composition}'
                 f' "{master_path}"'
                 f' "--props={props_path}"'
+                f' --timeout=60000'
                 f' --log=verbose'
             )
             result = subprocess.run(
@@ -361,6 +362,7 @@ Return the JSON array now:"""
                     self.remotion_composition,
                     str(master_path),
                     f"--props={props_path}",
+                    "--timeout=60000",
                     "--log=verbose",
                 ],
                 cwd=self.remotion_project,

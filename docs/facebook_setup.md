@@ -49,10 +49,41 @@ Socialline requests the following scopes during Facebook OAuth:
 |---|---|
 | `pages_show_list` | List all Pages the user manages |
 | `pages_read_engagement` | Read Page metadata |
-| `pages_manage_posts` | Publish photos to the Page |
+| `pages_manage_metadata` | Required for page token refresh |
+| `pages_manage_posts` | Publish photos and videos to the Page |
 | `business_management` | Access Pages managed via Meta Business Portfolio |
 
 > **Gotcha — Business Portfolio vs. direct Page Admin:** If your Page was assigned through a Meta Business Portfolio (the newer "Business Assets" management UI), `/me/accounts` returns an empty list without `business_management` scope. Socialline includes this scope and falls back to `/me/businesses → /{biz_id}/owned_pages` if needed.
+
+---
+
+## Production App Requirement
+
+**This is the most important operational consideration for Facebook.**
+
+When the Meta app is in **Development mode**, the `FACEBOOK_USER_TOKEN` (long-lived, 60-day) may not carry full page scopes even if the user approved them during OAuth. When the Page Access Token expires and Socialline tries to auto-refresh it via `/me/accounts`, Facebook returns:
+
+```
+OAuthException code 190: Any of the pages_read_engagement, pages_manage_metadata,
+pages_read_user_content, pages_manage_ads, pages_show_list or pages_messaging
+permission(s) must be granted before impersonating a user's page.
+```
+
+This means fresh posts work (valid page token) but auto-refresh on expiry fails. The error recurs every ~60 days until the app is moved to production.
+
+**To fix permanently:**
+
+1. Go to [developers.facebook.com](https://developers.facebook.com) → your app → **App Review**
+2. Submit for review with these permissions:
+   - `pages_manage_posts` *(core publishing)*
+   - `pages_read_engagement`
+   - `pages_manage_metadata`
+   - `pages_show_list`
+   - `instagram_content_publish` *(for Instagram via same app)*
+3. Once approved, move the app from **Development** to **Live**
+4. Re-authenticate all brands via Socialline → Accounts → Facebook → Reconnect
+
+Until production approval: reconnect Facebook every ~60 days when the user token expires.
 
 ---
 

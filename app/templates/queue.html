@@ -130,9 +130,11 @@
       <img src="{{ url_for('serve_queue_media', filename=img.filename) }}"
            class="mini-thumb" alt="">
       {% endif %}
+      {% set _display = img.title if img.title else (img.filename | replace('.mp4','') | replace('.mov','') | replace('.jpg','') | replace('.jpeg','') | replace('.png','') | replace('.gif','') | replace('.webp','') | replace('_',' ') | replace('-',' ')) %}
       <span class="mini-title" id="mtitle-{{ cid }}" title="{{ img.filename }}"
+            data-display="{{ _display | e }}"
             ondblclick="startRename('{{ cid }}','{{ img.filename }}',this)">
-        {{ img.filename | replace('.mp4','') | replace('.mov','') | replace('.jpg','') | replace('.jpeg','') | replace('.png','') | replace('.gif','') | replace('.webp','') | replace('_',' ') | replace('-',' ') }}
+        {{ _display }}
       </span>
       <div class="mini-platforms">
         {% for pid, pname, color, icon in PLATS[:4] %}
@@ -296,7 +298,7 @@ async function loadPublishedPanel() {
     const manualHtml = manualItems.map(it => `
       <div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;">
         <div class="d-flex justify-content-between align-items-center gap-2">
-          <span class="fw-semibold" style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;" title="${it.filename}">${it.filename.replace(/\.[^.]+$/, '')}</span>
+          <span class="fw-semibold" style="font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;" title="${it.filename}">${it.filename.replace(/\.[^.]+$/, '').replace(/_/g,' ')}</span>
           <span style="font-size:.72rem;color:#94a3b8;white-space:nowrap;">${fmtDate(it.mtime)}</span>
         </div>
         <span class="badge rounded-pill text-bg-secondary mt-1" style="font-size:.6rem;">moved manually</span>
@@ -386,7 +388,9 @@ function renderHistCard(it, status) {
     : (it.platforms||[]).map(p => `<span style="font-size:.72rem;color:#94a3b8;margin-right:6px;">${p}</span>`).join('');
 
   const date = fmtDate(it.scheduled_at || it.created_at);
-  const title = (it.filename||'').replace(/\.[^.]+$/, '').replace(/_/g,' ');
+  const _caps = it.captions || {};
+  const _capVal = Object.values(_caps).find(c => c && c.trim());
+  const title = _capVal ? _capVal.split('\n')[0].slice(0, 80) : (it.filename||'').replace(/\.[^.]+$/, '').replace(/_/g,' ');
 
   const retryBadge = (it.retry_count > 0)
     ? `<span title="Auto-retried ${it.retry_count}×" style="font-size:.65rem;color:#f59e0b;background:#fffbeb;border:1px solid #fde68a;border-radius:4px;padding:1px 5px;">↺ ${it.retry_count}×</span>`
@@ -795,7 +799,7 @@ async function commitRename(cid, filename, inp) {
 function cancelRename(cid, filename, inp) {
   const titleEl = document.getElementById('mtitle-' + cid);
   if (titleEl) {
-    titleEl.innerHTML = filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
+    titleEl.innerHTML = titleEl.dataset.display || filename.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' ');
   }
 }
 

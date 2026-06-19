@@ -108,6 +108,7 @@
 <script>
 const platformIds     = {{ platforms | map(attribute='id') | list | tojson }};
 const browserPlatformIds = {{ platforms | selectattr('type','equalto','browser') | map(attribute='id') | list | tojson }};
+const oauthPlatformIds   = {{ platforms | selectattr('type','equalto','oauth') | map(attribute='id') | list | tojson }};
 
 function togglePlatformCard(pid) {
   const body    = document.getElementById('pbody-' + pid);
@@ -181,6 +182,11 @@ async function loadAllAccounts() {
         ${accounts.length > 1 && !a.active
           ? `<button class="btn btn-link btn-sm p-0 text-muted" style="font-size:.7rem;" onclick="setActive('${a.id}','${pid}')">activate</button>`
           : (accounts.length > 1 ? '<span class="badge bg-success-subtle text-success border border-success-subtle" style="font-size:.65rem;">active</span>' : '')}
+        ${oauthPlatformIds.includes(pid) ? `
+        <button class="btn btn-outline-primary btn-sm py-0 px-1" style="font-size:.7rem;"
+                onclick="reconnectOAuth('${pid}')">
+          Reconnect
+        </button>` : ''}
         <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:.7rem;"
                 onclick="logOut('${a.id}','${a.account_name.replace(/'/g,"\\'")}','${pid}')">
           Log Out
@@ -188,6 +194,23 @@ async function loadAllAccounts() {
       </div>`;
     }).join('');
   });
+}
+
+async function reconnectOAuth(pid) {
+  const res  = await fetch('/api/accounts/launch-oauth/' + pid, {method: 'POST'});
+  const data = await res.json();
+  if (!data.ok || !data.auth_url) {
+    alert(data.error || 'Could not launch OAuth');
+    return;
+  }
+  window.open(data.auth_url, '_blank');
+  // After user authorizes and closes the popup, reload accounts
+  const check = setInterval(async () => {
+    const sr   = await fetch('/api/accounts/status/' + pid);
+    const sd   = await sr.json();
+    if (sd.configured) { clearInterval(check); loadAllAccounts(); }
+  }, 3000);
+  setTimeout(() => { clearInterval(check); loadAllAccounts(); }, 120000);
 }
 
 async function setActive(id, pid) {

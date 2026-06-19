@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socialline — Social Media, Automated</title>
+  <meta name="description" content="Schedule, publish, and grow across every platform. Socialline automates your social media so you can focus on what matters.">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue: #4361ee;
+      --dark: #0f172a;
+      --gray: #64748b;
+      --light: #f8fafc;
+      --border: #e2e8f0;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--dark); background: #fff; line-height: 1.6; }
+    a { color: var(--blue); text-decoration: none; }
+
+    /* Nav */
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 48px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(255,255,255,.95); backdrop-filter: blur(8px); z-index: 100; }
+    .logo { font-size: 1.3rem; font-weight: 700; color: var(--dark); letter-spacing: -.5px; }
+    .logo span { color: var(--blue); }
+    .nav-links { display: flex; gap: 32px; font-size: .9rem; color: var(--gray); }
+    .nav-links a { color: var(--gray); transition: color .2s; }
+    .nav-links a:hover { color: var(--dark); }
+    .btn { background: var(--blue); color: #fff !important; padding: 10px 22px; border-radius: 8px; font-size: .9rem; font-weight: 600; transition: opacity .2s; }
+    .btn:hover { opacity: .88; }
+
+    /* Hero */
+    .hero { text-align: center; padding: 100px 24px 80px; max-width: 760px; margin: 0 auto; }
+    .hero-badge { display: inline-block; background: #eff3ff; color: var(--blue); font-size: .78rem; font-weight: 600; padding: 4px 12px; border-radius: 20px; margin-bottom: 24px; letter-spacing: .3px; }
+    .hero h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); font-weight: 800; line-height: 1.15; letter-spacing: -.5px; margin-bottom: 20px; }
+    .hero h1 span { color: var(--blue); }
+    .hero p { font-size: 1.15rem; color: var(--gray); max-width: 540px; margin: 0 auto 36px; }
+    .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn-outline { border: 1.5px solid var(--border); color: var(--dark) !important; padding: 10px 22px; border-radius: 8px; font-size: .9rem; font-weight: 600; transition: border-color .2s; }
+    .btn-outline:hover { border-color: var(--blue); color: var(--blue) !important; }
+
+    /* Platforms */
+    .platforms { text-align: center; padding: 40px 24px 60px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--light); }
+    .platforms p { font-size: .82rem; color: var(--gray); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; margin-bottom: 20px; }
+    .platform-list { display: flex; gap: 28px; justify-content: center; flex-wrap: wrap; align-items: center; font-size: .9rem; font-weight: 600; color: var(--gray); }
+    .platform-list span { display: flex; align-items: center; gap: 6px; }
+
+    /* Features */
+    .features { padding: 80px 24px; max-width: 1040px; margin: 0 auto; }
+    .section-label { text-align: center; font-size: .82rem; font-weight: 700; color: var(--blue); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
+    .section-title { text-align: center; font-size: clamp(1.6rem, 3.5vw, 2.4rem); font-weight: 800; letter-spacing: -.3px; margin-bottom: 56px; }
+    .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 32px; }
+    .feature-card { padding: 32px; border: 1px solid var(--border); border-radius: 16px; transition: box-shadow .2s; }
+    .feature-card:hover { box-shadow: 0 8px 32px rgba(0,0,0,.07); }
+    .feature-icon { width: 44px; height: 44px; background: #eff3ff; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; margin-bottom: 16px; }
+    .feature-card h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 8px; }
+    .feature-card p { font-size: .9rem; color: var(--gray); line-height: 1.6; }
+
+    /* CTA */
+    .cta-section { background: var(--blue); color: #fff; text-align: center; padding: 80px 24px; }
+    .cta-section h2 { font-size: clamp(1.6rem, 3.5vw, 2.4rem); font-weight: 800; margin-bottom: 16px; }
+    .cta-section p { font-size: 1.05rem; opacity: .85; margin-bottom: 32px; }
+    .btn-white { background: #fff; color: var(--blue) !important; padding: 12px 28px; border-radius: 8px; font-weight: 700; font-size: 1rem; transition: opacity .2s; display: inline-block; }
+    .btn-white:hover { opacity: .9; }
+
+    /* Footer */
+    footer { padding: 40px 48px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: gap; font-size: .85rem; color: var(--gray); }
+    .footer-links { display: flex; gap: 24px; }
+    .footer-links a { color: var(--gray); transition: color .2s; }
+    .footer-links a:hover { color: var(--dark); }
+
+    @media (max-width: 640px) {
+      nav { padding: 16px 20px; }
+      .nav-links { display: none; }
+      footer { flex-direction: column; gap: 16px; text-align: center; padding: 32px 20px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">Social<span>line</span></div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#platforms">Platforms</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+  </div>
+  <a href="https://app.socialline.space" class="btn">Sign in</a>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge">Social media, on autopilot</div>
+  <h1>Publish everywhere.<br><span>Grow faster.</span></h1>
+  <p>Socialline schedules and publishes your content across every major platform — automatically, on your timeline.</p>
+  <div class="hero-cta">
+    <a href="https://app.socialline.space" class="btn">Get started</a>
+    <a href="#features" class="btn-outline">Learn more</a>
+  </div>
+</section>
+
+<section class="platforms" id="platforms">
+  <p>Publish to every major platform</p>
+  <div class="platform-list">
+    <span>📘 Facebook</span>
+    <span>📸 Instagram</span>
+    <span>🧵 Threads</span>
+    <span>𝕏 X / Twitter</span>
+    <span>🎵 TikTok</span>
+    <span>🦋 Bluesky</span>
+    <span>💼 LinkedIn</span>
+    <span>📌 Pinterest</span>
+    <span>▶️ YouTube</span>
+    <span>✉️ Telegram</span>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <div class="section-label">What you get</div>
+  <h2 class="section-title">Everything you need to stay consistent</h2>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon">📅</div>
+      <h3>Smart Scheduling</h3>
+      <p>Queue content weeks ahead and let Socialline post it at exactly the right time, every time — no manual effort.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🤖</div>
+      <h3>AI Content Generation</h3>
+      <p>Turn articles, ideas, and topics into ready-to-post captions and scripts in seconds using built-in AI.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🎬</div>
+      <h3>Video Publishing</h3>
+      <p>Publish Reels, TikToks, YouTube Shorts, and more — with automatic format adaptation per platform.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Multi-Brand Support</h3>
+      <p>Manage multiple brands or clients from one dashboard. Each brand has its own queue, schedule, and accounts.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔄</div>
+      <h3>Auto Retry</h3>
+      <p>Failed posts are automatically retried. Token expiry is handled silently — your schedule never breaks.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📥</div>
+      <h3>Content Sources</h3>
+      <p>Pull content from Reddit, RSS feeds, articles, and websites. Curate and schedule the best automatically.</p>
+    </div>
+  </div>
+</section>
+
+<section class="cta-section">
+  <h2>Ready to automate your social media?</h2>
+  <p>Join Socialline and start publishing smarter across every platform.</p>
+  <a href="https://app.socialline.space" class="btn-white">Get started free</a>
+</section>
+
+<footer>
+  <div class="logo">Social<span style="color:var(--blue)">line</span></div>
+  <div class="footer-links">
+    <a href="/terms">Terms of Service</a>
+    <a href="/privacy">Privacy Policy</a>
+    <a href="/data-deletion">Data Deletion</a>
+  </div>
+  <span>© 2026 Socialline. All rights reserved.</span>
+</footer>
+
+</body>
+</html>

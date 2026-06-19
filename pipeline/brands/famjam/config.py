@@ -53,7 +53,10 @@ def create_pipeline(platforms: list, store: ContentStore = None,
     if "facebook" in platforms and _has("facebook"):
         from pipeline.platforms.facebook.publisher import FacebookPublisher
         platform_configs.append(PlatformConfig(
-            publisher=FacebookPublisher(_creds("facebook"))))
+            publisher=FacebookPublisher(
+                _creds("facebook"),
+                on_token_refresh=_make_refresh_cb(
+                    acct, "facebook", "FACEBOOK_PAGE_ACCESS_TOKEN"))))
 
     if "instagram" in platforms and _has("instagram"):
         from pipeline.platforms.instagram.publisher import InstagramPublisher
@@ -61,7 +64,9 @@ def create_pipeline(platforms: list, store: ContentStore = None,
             publisher=InstagramPublisher(
                 _creds("instagram"),
                 on_token_refresh=_make_refresh_cb(
-                    acct, "instagram", "INSTAGRAM_ACCESS_TOKEN"))))
+                    acct, "instagram", "INSTAGRAM_ACCESS_TOKEN"),
+                on_page_token_refresh=_make_refresh_cb(
+                    acct, "instagram", "FACEBOOK_PAGE_ACCESS_TOKEN"))))
 
     if "x" in platforms and _has("x"):
         from pipeline.platforms.x.publisher import XPublisher

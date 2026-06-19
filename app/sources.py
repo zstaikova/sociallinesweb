@@ -365,33 +365,51 @@ class PullEngine:
 
     # ── Article ───────────────────────────────────────────────────────────────
 
-    def _pull_article(self, cfg: dict) -> list[str]:
-        import requests
+    def _fetch_article_content(self, url: str) -> "tuple[str, str, str]":
+        """
+        Fetch URL and return (title, article_text, img_url).
+        Handles sparse-paragraph pages (Substack notes, social posts) by falling
+        back to og:description. Returns img_url='' if image looks like an avatar.
+        """
+        import re, requests
         from bs4 import BeautifulSoup
 
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # Title — strip trailing profile suffixes like "Author (@handle)"
+        title = (soup.find("meta", property="og:title") or {}).get("content", "")
+        if not title:
+            tag = soup.find("title")
+            title = tag.get_text(strip=True) if tag else "article"
+        title = re.sub(r"\s*\(@[\w.]+\)\s*$", "", title).strip()
+
+        # Image — skip if it looks like a square avatar (w == h in URL params)
+        img_url = (soup.find("meta", property="og:image") or {}).get("content", "")
+        og_type = (soup.find("meta", property="og:type") or {}).get("content", "")
+        if og_type == "profile" or _is_avatar_url(img_url):
+            img_url = ""
+
+        # Article text: og:description fills the gap when paragraphs are JS-rendered
+        og_desc = (soup.find("meta", property="og:description") or {}).get("content", "")
+        paragraphs = [p.get_text(strip=True) for p in soup.find_all("p")
+                      if len(p.get_text(strip=True)) > 60]
+        parts = []
+        if og_desc and len(og_desc) > 80:
+            parts.append(og_desc)
+        parts.extend(paragraphs[:20])
+        article_text = "\n\n".join(parts)
+
+        return title, article_text, img_url
+
+    def _pull_article(self, cfg: dict) -> list[str]:
         url = cfg.get("url", "")
         if not url:
             raise ValueError("url is required")
 
-        r = requests.get(url, timeout=15,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
+        title, article_text, img_url = self._fetch_article_content(url)
 
-        # Extract title
-        title = (soup.find("meta", property="og:title") or {}).get("content", "")
-        if not title:
-            title_tag = soup.find("title")
-            title = title_tag.get_text(strip=True) if title_tag else "article"
-
-        # Extract main image
-        img_url = (soup.find("meta", property="og:image") or {}).get("content", "")
-
-        # Extract article text (paragraphs)
-        paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if len(p.get_text(strip=True)) > 60]
-        article_text = "\n".join(paragraphs[:20])  # first 20 paragraphs
-
-        # Summarise with DeepSeek
         style       = cfg.get("style", "bullets")
         max_bullets = int(cfg.get("max_bullets", 5))
         summary = self._summarise_article(title, article_text, url,
@@ -401,11 +419,107 @@ class PullEngine:
         if img_url:
             filename = self._download(img_url, title)
             if filename:
-                # Write summary as the caption sidecar
                 sidecar = self.queue_dir / (Path(filename).stem + ".caption.txt")
                 sidecar.write_text(summary)
                 added.append(filename)
+        # No article image (e.g. Substack notes use author avatar) — summary only.
+        # User can hit Render to generate a video script from this source.
         return added
+
+    def article_to_render(self, source: dict) -> str:
+        """
+        Fetch an article source, generate a video script via Claude Sonnet,
+        and queue it as a render job. Returns the render job_id.
+        """
+        from render_store import RenderStore
+
+        cfg = source["config"]
+        url = cfg.get("url", "")
+        if not url:
+            raise ValueError("Source has no URL configured")
+
+        title, article_text, _ = self._fetch_article_content(url)
+
+        script_text = self._generate_video_script(title, article_text, url)
+        script_filename = source["name"].replace(" ", "_")[:40] + ".txt"
+        meta = self._infer_meta(script_text, script_filename)
+        meta["source_url"] = url
+        meta["source_name"] = source["name"]
+
+        render_store = RenderStore(self.brand_id)
+        job_id = render_store.create_job(
+            script_text=script_text,
+            script_file=script_filename,
+            meta=meta,
+        )
+        return job_id
+
+    def _generate_video_script(self, title: str, text: str, url: str) -> str:
+        """Use Claude Sonnet to generate a short video script from article content."""
+        import os, json, urllib.request
+        from dotenv import load_dotenv
+        load_dotenv(self.env_file, override=True)
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return (
+                f"TITLE: {title}\nDURATION: ~20s\nPACE: Medium\n\n"
+                f"SCENE 1 [0-5s]\n{title}\n\n"
+                f"SCENE 2 [5-15s]\n{text[:200]}\n\n"
+                "SCENE 3 [15-20s]\nFollow for more.\n"
+            )
+
+        prompt = f"""You are a social media video scriptwriter. Create a punchy 20-second video script from this article.
+
+ARTICLE TITLE: {title}
+ARTICLE URL: {url}
+ARTICLE CONTENT:
+{text[:3000]}
+
+Write the script in this EXACT format:
+
+SERIES: [topic category]
+TITLE: [compelling title, under 10 words]
+DURATION: ~20s
+PACE: Fast
+
+SCENE 1 [0-4s]
+[Hook — one surprising statement or bold question]
+
+SCENE 2 [4-9s]
+[Key insight 1, 2-3 short lines]
+
+SCENE 3 [9-14s]
+[Key insight 2 or supporting detail, 2-3 short lines]
+
+SCENE 4 [14-18s]
+[Key takeaway, 2-3 short lines]
+
+SCENE 5 [18-20s]
+[CTA — "follow for more" or similar]
+
+Rules: max 3 lines per scene, max 12 words per line, no hashtags, educational and engaging tone.
+Return ONLY the script, no preamble."""
+
+        body = json.dumps({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 600,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=body,
+            headers={
+                "Content-Type":      "application/json",
+                "x-api-key":         api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            return result["content"][0]["text"].strip()
 
     def _summarise_article(self, title: str, text: str, url: str,
                            style: str = "bullets", max_bullets: int = 5) -> str:
@@ -685,6 +799,22 @@ No preamble. JSON only."""
             return dest.name
         except Exception:
             return None
+
+
+def _is_avatar_url(url: str) -> bool:
+    """Return True if the image URL looks like a square profile avatar."""
+    import re
+    if not url:
+        return False
+    # Square crop patterns: w_N,h_N where both dimensions are equal (e.g. w_680,h_680)
+    m = re.search(r"w_(\d+)[,_]h_(\d+)", url)
+    if m and m.group(1) == m.group(2):
+        return True
+    # Common avatar URL keywords
+    for kw in ("/avatar/", "/photo/", "/profile_image", "/profile-photo", "avatar."):
+        if kw in url:
+            return True
+    return False
 
 
 def _ext_from_content_type(ct: str) -> str:
